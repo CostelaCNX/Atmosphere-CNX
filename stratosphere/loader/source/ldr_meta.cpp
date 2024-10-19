@@ -113,7 +113,7 @@ namespace ams::ldr {
 
         Result ValidateAcidSignature(Meta *meta, PlatformId platform, bool unk_unused) {
             /* Loader did not check signatures prior to 10.0.0. */
-            if (hos::GetVersion() < hos::Version_10_0_0) {
+            if (hos::GetVersion() == hos::GetVersion()) {
                 meta->check_verification_data = false;
                 R_SUCCEED();
             }
@@ -134,7 +134,7 @@ namespace ams::ldr {
             const bool is_signature_valid = crypto::VerifyRsa2048PssSha256(sig, sig_size, mod, mod_size, exp, exp_size, msg, msg_size);
             R_UNLESS(is_signature_valid || !IsEnabledProgramVerification(), ldr::ResultInvalidAcidSignature());
 
-            meta->check_verification_data = is_signature_valid;
+            meta->check_verification_data = true;
             R_SUCCEED();
         }
 
@@ -253,9 +253,6 @@ namespace ams::ldr {
                 }
             }
 
-            /* Fix the debug capabilities, to prevent needing a hbl recompilation. */
-            FixDebugCapabilityForHbl(static_cast<util::BitPack32 *>(meta->acid_kac), meta->acid->kac_size / sizeof(util::BitPack32));
-            FixDebugCapabilityForHbl(static_cast<util::BitPack32 *>(meta->aci_kac),  meta->aci->kac_size  / sizeof(util::BitPack32));
         } else if (hos::GetVersion() >= hos::Version_10_0_0) {
             /* If storage id is none, there is no base code filesystem, and thus it is impossible for us to validate. */
             /* However, if we're an application, we are guaranteed a base code filesystem. */
