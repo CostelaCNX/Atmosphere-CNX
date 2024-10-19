@@ -14,6 +14,7 @@ SECTIONS
 	/* =========== CODE section =========== */
 	PROVIDE(__start__ = 0x0);
 	. = __start__;
+    __bin_start__ = .;
 	__code_start = . ;
 
 	.start :
@@ -124,6 +125,8 @@ SECTIONS
 	.gnu.version_r     : { *(.gnu.version_r) } :rodata
 	.note.gnu.build-id : { *(.note.gnu.build-id) } :rodata
 
+    __rodata_end = .;
+
 	/* =========== DATA section =========== */
 	. = ALIGN(0x1000);
 	__data_start = . ;
@@ -159,6 +162,7 @@ SECTIONS
 	__bss_start__ = .;
 
     .rela.dyn : { *(.rela.*) } :data
+    .relr.dyn : { *(.relr.*) } :data
 
     .bss ADDR(.rela.dyn) (NOLOAD) : {
         *(.dynbss)
@@ -169,6 +173,7 @@ SECTIONS
 
 	__bss_end__ = .;
 
+    __bin_end__ = .;
 	__end__ = ABSOLUTE(.);
 
 	/* ==================

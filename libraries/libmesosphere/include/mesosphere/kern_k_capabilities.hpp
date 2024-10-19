@@ -168,9 +168,10 @@ namespace ams::kern {
             struct DebugFlags {
                 using IdBits = Field<0, CapabilityId<CapabilityType::DebugFlags> + 1>;
 
-                DEFINE_FIELD(AllowDebug, IdBits,      1, bool);
-                DEFINE_FIELD(ForceDebug, AllowDebug,  1, bool);
-                DEFINE_FIELD(Reserved,   ForceDebug, 13);
+                DEFINE_FIELD(AllowDebug,     IdBits,         1, bool);
+                DEFINE_FIELD(ForceDebugProd, AllowDebug,     1, bool);
+                DEFINE_FIELD(ForceDebug,     ForceDebugProd, 1, bool);
+                DEFINE_FIELD(Reserved,       ForceDebug,     12);
             };
 
             #undef DEFINE_FIELD
@@ -192,7 +193,7 @@ namespace ams::kern {
             u32 m_program_type;
         private:
             constexpr bool SetSvcAllowed(u32 id) {
-                if (AMS_LIKELY(id < m_svc_access_flags.GetCount())) {
+                if (AMS_LIKELY(id < static_cast<u32>(m_svc_access_flags.GetCount()))) {
                     m_svc_access_flags[id] = true;
                     return true;
                 } else {
@@ -201,7 +202,7 @@ namespace ams::kern {
             }
 
             constexpr bool SetInterruptPermitted(u32 id) {
-                if (AMS_LIKELY(id < m_irq_access_flags.GetCount())) {
+                if (AMS_LIKELY(id < static_cast<u32>(m_irq_access_flags.GetCount()))) {
                     m_irq_access_flags[id] = true;
                     return true;
                 } else {
@@ -253,6 +254,10 @@ namespace ams::kern {
 
             constexpr bool IsPermittedDebug() const {
                 return m_debug_capabilities.Get<DebugFlags::AllowDebug>();
+            }
+
+            constexpr bool CanForceDebugProd() const {
+                return m_debug_capabilities.Get<DebugFlags::ForceDebugProd>();
             }
 
             constexpr bool CanForceDebug() const {

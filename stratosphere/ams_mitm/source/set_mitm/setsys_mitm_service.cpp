@@ -30,9 +30,6 @@ namespace ams::mitm::settings {
         constinit bool g_cached_firmware_version;
         constinit settings::FirmwareVersion g_firmware_version;
         constinit settings::FirmwareVersion g_ams_firmware_version;
-		
-		        /* Add here your package version */
-		char package_version[13] = "CNX 18.1.0-2";
 
         void CacheFirmwareVersion() {
             if (AMS_LIKELY(g_cached_firmware_version)) {
@@ -68,11 +65,10 @@ namespace ams::mitm::settings {
 
                 /* NOTE: We have carefully accounted for the size of the string we print. */
                 /* No truncation occurs assuming two-digits for all version number components. */
-                char display_version[sizeof(g_ams_firmware_version.display_version) + sizeof(package_version)];
+                char display_version[sizeof(g_ams_firmware_version.display_version)];
 
-                /* util::SNPrintf(display_version, sizeof(display_version), "%s|AMS %u.%u.%u|%c", g_ams_firmware_version.display_version, api_info.GetMajorVersion(), api_info.GetMinorVersion(), api_info.GetMicroVersion(), emummc_char); */
-				util::SNPrintf(display_version, sizeof(display_version), "%s|%s|AMS %u.%u.%u|%c", g_ams_firmware_version.display_version, package_version, api_info.GetMajorVersion(), api_info.GetMinorVersion(), api_info.GetMicroVersion(), emummc_char);
-				
+                util::SNPrintf(display_version, sizeof(display_version), "%s|AMS %u.%u.%u|%c", g_ams_firmware_version.display_version, api_info.GetMajorVersion(), api_info.GetMinorVersion(), api_info.GetMicroVersion(), emummc_char);
+
                 std::memcpy(g_ams_firmware_version.display_version, display_version, sizeof(display_version));
             }
 
