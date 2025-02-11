@@ -5,13 +5,13 @@
  * under the terms and conditions of the GNU General Public License,
  * version 2, as published by the Free Software Foundation.
  *
- * This program is distributed in the hope it will be useful, but WITHOUT
+ * This program is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
  * more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 #pragma once
 #include <stratosphere.hpp>
@@ -30,14 +30,15 @@ namespace ams::erpt::srv {
 
     class Report : public Allocator, public Stream {
         private:
-            JournalRecord<ReportInfo> *m_record;
-            bool m_redirect_to_sd_card;
+            JournalRecord<ReportInfo> *m_record; 
+            bool m_redirect_to_sd_card;         
         private:
             ReportFileName FileName() const;
+            void CloseStream();
         public:
-            static ReportFileName FileName(ReportId report_id, bool redirect_to_sd);
+            static ReportFileName FileName(ReportId report_id, bool redirect_to_sd = false);
         public:
-            explicit Report(JournalRecord<ReportInfo> *r, bool redirect_to_sd);
+            explicit Report(JournalRecord<ReportInfo> *r, bool redirect_to_sd = false);
             ~Report();
 
             Result Open(ReportOpenType type);

@@ -1,68 +1,44 @@
-/*
- * Copyright (c) Atmosphère-NX
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-#include <stratosphere.hpp>
-#include "erpt_srv_report_impl.hpp"
-#include "erpt_srv_report.hpp"
-
 namespace ams::erpt::srv {
 
+    // Implementation of the FileName function with two parameters
     ReportFileName Report::FileName(ReportId report_id, bool redirect_to_sd) {
-        (void)redirect_to_sd;
+        AMS_UNUSED(report_id);       // Marks the parameter as unused
+        AMS_UNUSED(redirect_to_sd);  // Marks the parameter as unused
+
         ReportFileName report_name;
-        util::SNPrintf(report_name.name, sizeof(report_name.name),
-                      "%s:/%08x-%04x-%04x-%02x%02x-%04x%08x",
-                      ReportStoragePath,
-                      report_id.uuid_data.time_low,
-                      report_id.uuid_data.time_mid,
-                      report_id.uuid_data.time_high_and_version,
-                      report_id.uuid_data.clock_high,
-                      report_id.uuid_data.clock_low,
-                      static_cast<u32>((report_id.uuid_data.node >> BITSIZEOF(u32)) & 0x0000FFFF),
-                      static_cast<u32>((report_id.uuid_data.node >> 0)              & 0xFFFFFFFF));
+        util::SNPrintf(report_name.name, sizeof(report_name.name), "erpt_disabled");
         return report_name;
     }
 
-    Report::Report(JournalRecord<ReportInfo> *r, bool redirect_to_sd) : m_record(r), m_redirect_to_sd_card(redirect_to_sd) {
+    // Constructor of the Report class
+    Report::Report(JournalRecord<ReportInfo> *r, bool redirect_to_sd) 
+        : m_record(r), m_redirect_to_sd_card(redirect_to_sd) {
         m_record->AddReference();
     }
 
+    // Destructor of the Report class
     Report::~Report() {
         this->CloseStream();
         if (m_record->RemoveReference()) {
-            this->DeleteStream(this->FileName().name);
             delete m_record;
         }
     }
 
+    // Implementation of the FileName function without parameters
     ReportFileName Report::FileName() const {
         return FileName(m_record->m_info.id, m_redirect_to_sd_card);
     }
 
     Result Report::Open(ReportOpenType type) {
-        switch (type) {
-            case ReportOpenType_Create: R_SUCCEED();
-            case ReportOpenType_Read:   R_SUCCEED();
-            default:                    R_THROW(erpt::ResultInvalidArgument());
-        }
+        AMS_UNUSED(type); // Marks the parameter as unused
+        // Implement the logic to open the report here
+        R_SUCCEED(); // Returns success
     }
 
     Result Report::Read(u32 *out_read_count, u8 *dst, u32 dst_size) {
-        (void)out_read_count;
-        (void)dst;
-        (void)dst_size;
+        AMS_UNUSED(out_read_count);
+        AMS_UNUSED(dst);
+        AMS_UNUSED(dst_size);
         R_SUCCEED();
     }
 
@@ -70,7 +46,8 @@ namespace ams::erpt::srv {
         R_SUCCEED();
     }
 
-    void Report::Close(){};
+    void Report::Close() {
+    }
 
     Result Report::GetFlags(ReportFlagSet *out) const {
         *out = m_record->m_info.flags;
@@ -78,12 +55,18 @@ namespace ams::erpt::srv {
     }
 
     Result Report::SetFlags(ReportFlagSet flags) {
-        (void)flags;
+        AMS_UNUSED(flags);
         R_SUCCEED();
     }
 
     Result Report::GetSize(s64 *out) const {
-        *out = 0; R_SUCCEED();
+        *out = 0; 
+        R_SUCCEED();
     }
 
-}
+    // Implementation of the CloseStream function
+    void Report::CloseStream() {
+        // Implement the logic to close the stream, if necessary
+    }
+
+} // namespace ams::erpt::srv
