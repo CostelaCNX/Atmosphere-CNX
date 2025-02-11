@@ -1,6 +1,24 @@
+/*
+ * Copyright (c) Atmosphère-NX
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+#include <stratosphere.hpp>
+#include "erpt_srv_report_impl.hpp"
+#include "erpt_srv_report.hpp"
+
 namespace ams::erpt::srv {
 
-    // Implementation of the FileName function with two parameters
     ReportFileName Report::FileName(ReportId report_id, bool redirect_to_sd) {
         AMS_UNUSED(report_id);       // Marks the parameter as unused
         AMS_UNUSED(redirect_to_sd);  // Marks the parameter as unused
@@ -10,13 +28,11 @@ namespace ams::erpt::srv {
         return report_name;
     }
 
-    // Constructor of the Report class
     Report::Report(JournalRecord<ReportInfo> *r, bool redirect_to_sd) 
         : m_record(r), m_redirect_to_sd_card(redirect_to_sd) {
         m_record->AddReference();
     }
 
-    // Destructor of the Report class
     Report::~Report() {
         this->CloseStream();
         if (m_record->RemoveReference()) {
@@ -24,15 +40,13 @@ namespace ams::erpt::srv {
         }
     }
 
-    // Implementation of the FileName function without parameters
     ReportFileName Report::FileName() const {
         return FileName(m_record->m_info.id, m_redirect_to_sd_card);
     }
 
     Result Report::Open(ReportOpenType type) {
         AMS_UNUSED(type); // Marks the parameter as unused
-        // Implement the logic to open the report here
-        R_SUCCEED(); // Returns success
+        R_SUCCEED();
     }
 
     Result Report::Read(u32 *out_read_count, u8 *dst, u32 dst_size) {
@@ -64,9 +78,8 @@ namespace ams::erpt::srv {
         R_SUCCEED();
     }
 
-    // Implementation of the CloseStream function
     void Report::CloseStream() {
         // Implement the logic to close the stream, if necessary
     }
 
-} // namespace ams::erpt::srv
+}
