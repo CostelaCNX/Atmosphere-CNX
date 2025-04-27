@@ -252,7 +252,7 @@ namespace ams::ldr {
                     meta->npdm->main_thread_priority = HblMainThreadPriorityApplet;
                 }
             }
-
+            
         } else if (hos::GetVersion() >= hos::Version_10_0_0) {
             /* If storage id is none, there is no base code filesystem, and thus it is impossible for us to validate. */
             /* However, if we're an application, we are guaranteed a base code filesystem. */

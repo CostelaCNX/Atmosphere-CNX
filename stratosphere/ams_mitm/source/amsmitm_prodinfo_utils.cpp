@@ -165,7 +165,7 @@ namespace ams::mitm {
         #undef DEFINE_CALIBRATION_CRC_BLOCK
         #undef DEFINE_CALIBRATION_SHA_BLOCK
 
-        constexpr inline const char BlankSerialNumberString[] = "XAW00000000000";
+        constexpr inline const char BlankSerialNumberString[] = "SEM SERIAL";
 
         template<typename Block>
         void Blank(Block &block) {
