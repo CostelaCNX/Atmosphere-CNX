@@ -16,95 +16,95 @@
 
 /* Patch fallback case to mov w0, #1 rather than retrieving settings flag. */
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_1_0_0[] = {
-    { 0x304C, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x304C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_2_0_0[] = {
-    { 0x3398, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x33C4, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_2_1_0[] = {
-    { 0x32D4, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x3300, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_3_0_0[] = {
-    { 0x3688, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x36B4, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_3_0_1[] = {
-    { 0x3688, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x36B4, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_4_0_0[] = {
-    { 0x366C, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x3698, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_5_0_0[] = {
-    { 0x20730, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x2075C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_5_1_0[] = {
-    { 0x207C0, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x207EC, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_6_0_0[] = {
-    { 0x74B00, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x74B2C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_6_1_0[] = {
-    { 0x74B40, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x74B6C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_7_0_0[] = {
-    { 0x76C20, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x76C4C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_8_0_0[] = {
-    { 0x78520, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x7854C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_9_0_0[] = {
-    { 0xE1C0, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0xE1EC, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_9_1_0[] = {
-    { 0xE1C0, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0xE1EC, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_10_0_0[] = {
-    { 0xF650, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0xF67C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_11_0_0[] = {
-    { 0xF300, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0xF32C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_12_0_0[] = {
-    { 0x1069C, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x106C8, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_12_1_0[] = {
-    { 0x106C8, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x106C8, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_13_0_0[] = {
-    { 0x10714, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x10740, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_13_1_0[] = {
-    { 0x10714, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x10740, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_14_0_0[] = {
-    { 0x4420C, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x44238, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_15_0_0[] = {
-    { 0x79E34, "\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 8 },
+    { 0x79E60, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_16_0_0[] = {
-    { 0x7A7E0, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
+    { 0x7A80C, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_17_0_0[] = {
@@ -121,6 +121,14 @@ constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_18_0_
 
 constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_19_0_0[] = {
     { 0x86420, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
+};
+
+constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_20_0_0[] = {
+    { 0x879C0, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
+};
+
+constexpr inline const EmbeddedPatchEntry ForceCommunicationEnabledPatches_20_1_0[] = {
+    { 0x87AC0, "\x00\x30\x9A\xD2\x00\x1E\xA1\xF2\x61\x01\x00\xD4\xE0\x03\x1F\xAA\xC0\x03\x5F\xD6", 20 },
 };
 
 constexpr inline const EmbeddedPatch ForceCommunicationEnabledPatches[] = {
@@ -149,6 +157,8 @@ constexpr inline const EmbeddedPatch ForceCommunicationEnabledPatches[] = {
     { ParseModuleId("A2C3AEE4E5A954908BEBAEDEA2010095E9E521B2"), util::size(ForceCommunicationEnabledPatches_16_0_0), ForceCommunicationEnabledPatches_16_0_0 }, /* 16.0.0-16.1.0 */
     { ParseModuleId("440F71259BCA1E97EA3663CBD6EC9315951F9E96"), util::size(ForceCommunicationEnabledPatches_17_0_0), ForceCommunicationEnabledPatches_17_0_0 }, /* 17.0.0-17.0.1 */
     { ParseModuleId("184A3F5734F456D0718FA35D15D8410A9BDFC537"), util::size(ForceCommunicationEnabledPatches_18_0_0), ForceCommunicationEnabledPatches_18_0_0 }, /* 18.0.0 */
-    { ParseModuleId("0C4C2220D90155B139E254179D2D35244B32C9C1"), util::size(ForceCommunicationEnabledPatches_18_0_1), ForceCommunicationEnabledPatches_18_0_1 }, /* 18.0.1-18.0.0 */
-    { ParseModuleId("1BD31ABF1E3E607CA79B29CF7D7B10758FF93FA0"), util::size(ForceCommunicationEnabledPatches_19_0_0), ForceCommunicationEnabledPatches_19_0_0 }, /* 19.0.0 */
+    { ParseModuleId("0C4C2220D90155B139E254179D2D35244B32C9C1"), util::size(ForceCommunicationEnabledPatches_18_0_1), ForceCommunicationEnabledPatches_18_0_1 }, /* 18.0.1-18.1.0 */
+    { ParseModuleId("1BD31ABF1E3E607CA79B29CF7D7B10758FF93FA0"), util::size(ForceCommunicationEnabledPatches_19_0_0), ForceCommunicationEnabledPatches_19_0_0 }, /* 19.0.0-19.0.1 */
+    { ParseModuleId("2C3E24F46D131685B361FEE1F0570B985095E034"), util::size(ForceCommunicationEnabledPatches_20_0_0), ForceCommunicationEnabledPatches_20_0_0 }, /* 20.0.0-20.0.1 */
+    { ParseModuleId("523D2C6E08D9BE4B512AD20AA5628B7BB06D73C2"), util::size(ForceCommunicationEnabledPatches_20_1_0), ForceCommunicationEnabledPatches_20_1_0 }, /* 20.1.0 */
 };
