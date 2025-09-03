@@ -1,6 +1,4 @@
 # Changelog
-## 1.9.4
-+ Basic support was added for 20.4.0.
 ## 1.9.3
 + Basic support was added for 20.3.0.
 + Compatibility was fixed for loading mods with KOTOR 2 (star wars).
