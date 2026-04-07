@@ -177,7 +177,8 @@ namespace ams::fuse {
         }
 
         constexpr const TargetFirmware FuseVersionIncrementFirmwares[] = {
-            TargetFirmware_22_0_0,
+            TargetFirmware_22_1_0,
+			TargetFirmware_22_0_0,
             TargetFirmware_21_0_0,
             TargetFirmware_20_0_0,
             TargetFirmware_19_0_0,
