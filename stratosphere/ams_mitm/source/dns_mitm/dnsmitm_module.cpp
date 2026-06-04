@@ -63,7 +63,7 @@ namespace ams::mitm::socket::resolver {
             }
         }
 
-        constexpr size_t TotalThreads = 8;
+        constexpr size_t TotalThreads = 4;
         static_assert(TotalThreads >= 1, "TotalThreads");
         constexpr size_t NumExtraThreads = TotalThreads - 1;
         constexpr size_t ThreadStackSize = mitm::ModuleTraits<socket::resolver::MitmModule>::StackSize;

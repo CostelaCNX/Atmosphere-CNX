@@ -19,6 +19,6 @@
 
 namespace ams::mitm::bpc {
 
-    DEFINE_MITM_MODULE_CLASS(0x8000, AMS_GET_SYSTEM_THREAD_PRIORITY(bpc, IpcServer));
+    DEFINE_MITM_MODULE_CLASS(0x4000, AMS_GET_SYSTEM_THREAD_PRIORITY(bpc, IpcServer));
 
 }

@@ -30,13 +30,13 @@ namespace ams::mitm::fs {
 
         struct ServerOptions {
             static constexpr size_t PointerBufferSize   = 0x800;
-            static constexpr size_t MaxDomains          = 0x40;
-            static constexpr size_t MaxDomainObjects    = 0x4000;
+            static constexpr size_t MaxDomains          = 0x20;
+            static constexpr size_t MaxDomainObjects    = 0x1000;
             static constexpr bool CanDeferInvokeRequest = false;
             static constexpr bool CanManageMitmServers  = true;
         };
 
-        constexpr size_t MaxSessions = 61;
+        constexpr size_t MaxSessions = 40;
 
         class ServerManager final : public sf::hipc::ServerManager<PortIndex_Count, ServerOptions, MaxSessions> {
             private:
@@ -58,7 +58,7 @@ namespace ams::mitm::fs {
             }
         }
 
-        constexpr size_t TotalThreads = 5;
+        constexpr size_t TotalThreads = 3;
         static_assert(TotalThreads >= 1, "TotalThreads");
         constexpr size_t NumExtraThreads = TotalThreads - 1;
         constexpr size_t ThreadStackSize = mitm::ModuleTraits<fs::MitmModule>::StackSize;
