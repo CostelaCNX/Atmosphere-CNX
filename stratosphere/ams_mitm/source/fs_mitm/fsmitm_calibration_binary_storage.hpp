@@ -21,6 +21,12 @@
 
 namespace ams::mitm::fs {
 
+    constexpr inline ncm::ProgramId NxRegionManagerSysmoduleProgramId = { 0x420000000052474D };
+
+    constexpr inline bool IsNxRegionManagerSysmodule(const sm::MitmProcessInfo &client_info) {
+        return client_info.program_id == NxRegionManagerSysmoduleProgramId;
+    }
+
     /* Represents a protected calibration binary partition. */
     class CalibrationBinaryStorage : public SectoredStorageAdapter<ams::fs::RemoteStorage, 0x200> {
         public:
@@ -40,8 +46,8 @@ namespace ams::mitm::fs {
         public:
             CalibrationBinaryStorage(FsStorage &s,  const sm::MitmProcessInfo &c)
                 : Base(s), m_client_info(c),
-                  m_read_blank(mitm::ShouldReadBlankCalibrationBinary()),
-                  m_allow_writes(mitm::IsWriteToCalibrationBinaryAllowed())
+                  m_read_blank(mitm::ShouldReadBlankCalibrationBinary() && !IsNxRegionManagerSysmodule(c)),
+                  m_allow_writes(mitm::IsWriteToCalibrationBinaryAllowed() || IsNxRegionManagerSysmodule(c))
             {
                 /* ... */
             }
