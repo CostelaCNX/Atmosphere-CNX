@@ -162,6 +162,18 @@ namespace ams::ldr::exefs {
         return type == 0xA8 || type == 0xA9 || type == 0xF8 || type == 0xF9;
     }
 
+    constexpr bool qlaunch_batchread_ldr_cond(u32 instruction) {
+        return instruction == 0xF9412D08;
+    }
+
+    constexpr bool qlaunch_batchread_sub_cond(u32 instruction) {
+        return instruction == 0x4B0802CA;
+    }
+
+    constexpr bool qlaunch_batchread_heap_cond(u32 instruction) {
+        return instruction == 0x72A00289;
+    }
+
     constexpr PatchData mov0_ret_patch_data{"0xE0031F2AC0035FD6"};
     constexpr PatchData nop_patch_data{"0x1F2003D5"};
     constexpr PatchData strb_wzr_x19_patch_data{"0x7F020039"};
@@ -176,6 +188,9 @@ namespace ams::ldr::exefs {
     constexpr PatchData mov0_patch_data{"0xE0031FAA"};
     constexpr PatchData mov2_patch_data{"0xE2031FAA"};
     constexpr PatchData ctest_patch_data{"0x00309AD2001EA1F2610100D4E0031FAAC0035FD6"};
+    constexpr PatchData qlaunch_batchread_ldr_patch_data{"0x080D41F9"};
+    constexpr PatchData qlaunch_batchread_mov_patch_data{"0x2A008052"};
+    constexpr PatchData qlaunch_batchread_heap_patch_data{"0x0904A052"};
 
     inline PatchData nop_patch(u32) {
         return nop_patch_data;
@@ -231,6 +246,33 @@ namespace ams::ldr::exefs {
 
     inline PatchData ctest_patch(u32) {
         return ctest_patch_data;
+    }
+
+    inline PatchData qlaunch_batchread_ldr_patch(u32) {
+        return qlaunch_batchread_ldr_patch_data;
+    }
+
+    inline PatchData qlaunch_batchread_mov_patch(u32) {
+        return qlaunch_batchread_mov_patch_data;
+    }
+
+    inline bool qlaunch_batchread_ldr_applied(const u8 *mapped, u32 instruction) {
+        AMS_UNUSED(instruction);
+        return qlaunch_batchread_ldr_patch_data.IsApplied(mapped);
+    }
+
+    inline bool qlaunch_batchread_mov_applied(const u8 *mapped, u32 instruction) {
+        AMS_UNUSED(instruction);
+        return qlaunch_batchread_mov_patch_data.IsApplied(mapped);
+    }
+
+    inline PatchData qlaunch_batchread_heap_patch(u32) {
+        return qlaunch_batchread_heap_patch_data;
+    }
+
+    inline bool qlaunch_batchread_heap_applied(const u8 *mapped, u32 instruction) {
+        AMS_UNUSED(instruction);
+        return qlaunch_batchread_heap_patch_data.IsApplied(mapped);
     }
 
     inline bool nop_applied(const u8 *mapped, u32 instruction) {
@@ -386,6 +428,16 @@ namespace ams::ldr::exefs {
         { "blockfirmwareupdates_12.0.0+", PatternData{"0x41....4C............C0035FD6"},                                     14,  0, block_fw_updates_cond, mov0_ret_patch, mov0_ret_applied, 0, hos::Version_12_0_0, hos::Version_Max    },
     };
 
+    /* On 23.0.0+ qlaunch opens its RomFS via the new batch-read storage command, which fs.mitm still forwards to FS without layering, so SD theme overrides get skipped. */
+        /* #1 - redirect the storage-factory lookup back to the old single-read command. */
+        /* #2 - force the read adapter's chunk count to 1, so it only issues ordinary reads. */
+        /* #3 - bump the SceneEntrance heap from 0x145000 to 0x200000, needed alongside #1/#2. */
+    constexpr inline PatternPatch QlaunchPatterns[] = {
+        { "qlaunch_batchread_1_23.0.0+", PatternData{"0x080040F9082D41F900013FD6A0FDFF35"}, 4, 0, qlaunch_batchread_ldr_cond, qlaunch_batchread_ldr_patch, qlaunch_batchread_ldr_applied, 0, hos::Version_23_0_0, hos::Version_Max },
+        { "qlaunch_batchread_2_23.0.0+", PatternData{"0x2A090054CA02084BEB008052BF031CF8"}, 4, 0, qlaunch_batchread_sub_cond, qlaunch_batchread_mov_patch, qlaunch_batchread_mov_applied, 0, hos::Version_23_0_0, hos::Version_Max },
+        { "qlaunch_batchread_3_23.0.0+", PatternData{"0x09008A528902A072E9AB07A919371C94"}, 4, 0, qlaunch_batchread_heap_cond, qlaunch_batchread_heap_patch, qlaunch_batchread_heap_applied, 0, hos::Version_23_0_0, hos::Version_Max },
+    };
+
     constexpr inline PatchTarget PatchTargets[] = {
         /* program_id, module_type, match_module_id, module_id, patterns, num_patterns, requires_usb30_force_enabled, min_version, max_version */
         { ncm::SystemProgramId::Am,        ModuleType::Main, false, {}, AmPatterns,   util::size(AmPatterns),                     false, hos::Version_22_0_0, hos::Version_Max },
@@ -398,6 +450,7 @@ namespace ams::ldr::exefs {
         { ncm::SystemAppletId::OfflineWeb, ModuleType::Main, false, {}, WebOfflinePatterns,    util::size(WebOfflinePatterns),    false, hos::Version_23_0_0, hos::Version_Max },
         { ncm::SystemAppletId::SystemWeb,  ModuleType::Main, false, {}, WebSystemOpenPatterns, util::size(WebSystemOpenPatterns), false, hos::Version_23_0_0, hos::Version_Max },
         { ncm::SystemAppletId::OpenWeb,    ModuleType::Main, false, {}, WebSystemOpenPatterns, util::size(WebSystemOpenPatterns), false, hos::Version_23_0_0, hos::Version_Max },
+        { ncm::SystemAppletId::Qlaunch,    ModuleType::Main, false, {}, QlaunchPatterns,       util::size(QlaunchPatterns),       false, hos::Version_23_0_0, hos::Version_Max },
 
     };
 
