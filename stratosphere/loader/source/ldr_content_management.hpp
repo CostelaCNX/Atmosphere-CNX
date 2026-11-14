@@ -15,6 +15,7 @@
  */
 #pragma once
 #include <stratosphere.hpp>
+#include <stratosphere/usb/usb_content_proxy.hpp>
 
 namespace ams::ldr {
 
@@ -36,6 +37,7 @@ namespace ams::ldr {
             bool m_mounted_ams;
             bool m_mounted_sd_or_code;
             bool m_mounted_code;
+            bool m_uses_usb_code = false;
         public:
             ScopedCodeMount(const ncm::ProgramLocation &loc, const ldr::ProgramAttributes &attrs, os::SdkMutex &mutex, const char *ams, const char *sd_b, const char *b);
             ScopedCodeMount(const ncm::ProgramLocation &loc, const cfg::OverrideStatus &override_status, const ldr::ProgramAttributes &attrs, os::SdkMutex &mutex, const char *ams, const char *sd_b, const char *b);
@@ -44,6 +46,8 @@ namespace ams::ldr {
             Result GetResult() const {
                 return m_result;
             }
+
+            bool UsesUsbCode() const { return m_uses_usb_code && !m_override_status.IsHbl(); }
 
             const cfg::OverrideStatus &GetOverrideStatus() const {
                 AMS_ABORT_UNLESS(m_has_status);
@@ -126,7 +130,11 @@ namespace ams::ldr {
     };
 
     /* Redirection API. */
+    void RecordUsbLoaderTraceForDiagnostics(usb::content::LoaderProbeStage stage, const ncm::ProgramLocation &loc, Result result = ResultSuccess());
     Result GetProgramPath(char *out_path, size_t out_size, const ncm::ProgramLocation &loc, const ldr::ProgramAttributes &attrs);
+    void ClearUsbExternalCodeVerification(ncm::ProgramId program_id);
+    Result BindUsbProcessContent(PinId pin_id, ncm::ProgramId program_id, os::ProcessId process_id);
+    void ReleaseUsbProcessContent(PinId pin_id);
     Result RedirectProgramPath(const char *path, size_t size, const ncm::ProgramLocation &loc);
     Result RedirectHtmlDocumentPathForHbl(const ncm::ProgramLocation &loc);
 

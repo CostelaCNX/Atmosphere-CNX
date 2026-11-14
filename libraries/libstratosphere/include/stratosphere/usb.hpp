@@ -19,3 +19,10 @@
 #include <stratosphere/usb/usb_types.hpp>
 #include <stratosphere/usb/usb_device_types.hpp>
 #include <stratosphere/usb/usb_device.hpp>
+#include <stratosphere/usb/usb_host.hpp>
+#include <stratosphere/usb/usb_mass_storage.hpp>
+#include <stratosphere/usb/usb_volume.hpp>
+#include <stratosphere/usb/usb_storage.hpp>
+#include <stratosphere/usb/usb_filesystem.hpp>
+#include <stratosphere/usb/usb_game_image.hpp>
+#include <stratosphere/usb/usb_homebrew.hpp>

@@ -56,6 +56,8 @@
                 "svcOutputDebugString":	"0x27",
                 "svcReturnFromException":	"0x28",
                 "svcGetInfo":	"0x29",
+                "svcSetThreadActivity": "0x32",
+                "svcGetThreadContext3": "0x33",
                 "svcWaitForAddress":	"0x34",
                 "svcSignalToAddress":	"0x35",
                 "svcSynchronizePreemptionState": "0x36",
@@ -79,6 +81,7 @@
                 "svcUnmapDeviceAddressSpace":	"0x5c",
                 "svcGetSystemInfo":	"0x6f",
                 "svcManageNamedPort": "0x71",
+                "svcGetProcessInfo": "0x7C",
                 "svcCallSecureMonitor": "0x7F"
             }
         }

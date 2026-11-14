@@ -131,6 +131,14 @@ namespace ams::ncm {
                 R_RETURN(m_interface->GetLatestContentMetaKey(out_key, id));
             }
 
+            /* Recoverable listing for optional USB launch resolution. The old
+             * convenience overload aborts on an IPC error; launch must not. */
+            Result ListContentMetaResult(ListCount *out, ContentMetaKey *dst, size_t count,
+                    ContentMetaType type, ApplicationId app_id, u64 min, u64 max) {
+                R_RETURN(m_interface->List(std::addressof(out->total), std::addressof(out->written),
+                    sf::OutArray<ContentMetaKey>(dst, count), type, app_id, min, max, ContentInstallType::Full));
+            }
+
             Result ListContentInfo(s32 *out_count, ContentInfo *dst, size_t dst_size, const ContentMetaKey &key, s32 offset) {
                 AMS_ASSERT(m_interface != nullptr);
                 R_RETURN(m_interface->ListContentInfo(out_count, sf::OutArray<ContentInfo>(dst, dst_size), key, offset));

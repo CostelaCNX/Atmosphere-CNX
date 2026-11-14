@@ -14,11 +14,17 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/usb/usb_content_proxy.hpp>
 #include "ncm_content_meta_database_impl.hpp"
+#include <stratosphere/ncm/ncm_usb_title_map.hpp>
+#include "ncm_usb_metadata_mapping.hpp"
+#include "ncm_lookup_trace.hpp"
 
 namespace ams::ncm {
 
+
     Result ContentMetaDatabaseImpl::GetContentInfoImpl(ContentInfo *out, const ContentMetaKey &key, ContentType type, util::optional<u8> id_offset) const {
+        const Result result = [&]() -> Result {
         R_TRY(this->EnsureEnabled());
 
         /* Find the meta key. */
@@ -47,11 +53,86 @@ namespace ams::ncm {
         /* Save output. */
         *out = *content_info;
         R_SUCCEED();
+        }();
+        ContentId content_id{};
+        if (R_SUCCEEDED(result)) content_id = out->GetId();
+        lookup_trace::Metadata(usb_recovery::LookupOperation::MetadataContentInfo, m_storage_id,
+            key.id, key.version, type, id_offset, result, R_SUCCEEDED(result) ? std::addressof(content_id) : nullptr);
+        R_RETURN(result);
     }
 
     Result ContentMetaDatabaseImpl::Set(const ContentMetaKey &key, const sf::InBuffer &value) {
         R_TRY(this->EnsureEnabled());
-        R_RETURN(m_kvs->Set(key, value.GetPointer(), value.GetSize()));
+        const bool is_sd_application = m_storage_id == StorageId::SdCard
+            && key.type == ContentMetaType::Application;
+        // A mounted USB drive does not identify this transaction's target.
+        // Only content registered by an explicit USB handle can create a map.
+        bool queue_usb_mapping = false;
+        if (is_sd_application) {
+            ContentId meta{}, control{}, program{};
+            queue_usb_mapping = impl::GetRegisteredUsbApplicationIds(std::addressof(meta), std::addressof(control),
+                std::addressof(program), value.GetPointer(), value.GetSize(), true);
+        }
+        bool preserve_usb_mapping = false;
+        if (is_sd_application && !queue_usb_mapping
+            && impl::HasSameRegisteredUsbApplicationMap(ProgramId{key.id}, value.GetPointer(), value.GetSize())) {
+            const void *previous = nullptr;
+            size_t previous_size = 0;
+            const Result result = this->GetContentMetaPointer(std::addressof(previous), std::addressof(previous_size), key);
+            if (!ncm::ResultContentMetaNotFound::Includes(result)) {
+                R_TRY(result);
+                preserve_usb_mapping = previous_size == value.GetSize()
+                    && std::memcmp(previous, value.GetPointer(), previous_size) == 0;
+            }
+        }
+        const bool queue_stock_unmap = is_sd_application && !queue_usb_mapping && !preserve_usb_mapping;
+        s32 usb_pending_index = 0;
+        if (queue_usb_mapping) {
+            for (; usb_pending_index < m_pending_usb_title_id_count; ++usb_pending_index) {
+                if (m_pending_usb_title_ids[usb_pending_index] == key) {
+                    break;
+                }
+            }
+            R_UNLESS(usb_pending_index < MaxPendingUsbTitleIds, ncm::ResultBufferInsufficient());
+        }
+        s32 stock_pending_index = 0;
+        if (queue_stock_unmap) {
+            for (; stock_pending_index < m_pending_stock_title_id_count; ++stock_pending_index) {
+                if (m_pending_stock_title_ids[stock_pending_index] == key) {
+                    break;
+                }
+            }
+            R_UNLESS(stock_pending_index < MaxPendingUsbTitleIds, ncm::ResultBufferInsufficient());
+        }
+        R_TRY(m_kvs->Set(key, value.GetPointer(), value.GetSize()));
+        // Repeated Set on the same key is one transaction: the latest
+        // successful destination replaces any earlier pending decision.
+        if (queue_stock_unmap || preserve_usb_mapping) {
+            for (s32 i = 0; i < m_pending_usb_title_id_count; ++i) {
+                if (m_pending_usb_title_ids[i] == key) {
+                    m_pending_usb_title_ids[i] = m_pending_usb_title_ids[--m_pending_usb_title_id_count];
+                    break;
+                }
+            }
+        }
+        if (queue_usb_mapping || preserve_usb_mapping) {
+            for (s32 i = 0; i < m_pending_stock_title_id_count; ++i) {
+                if (m_pending_stock_title_ids[i] == key) {
+                    m_pending_stock_title_ids[i] = m_pending_stock_title_ids[--m_pending_stock_title_id_count];
+                    break;
+                }
+            }
+        }
+
+
+        if (queue_usb_mapping && usb_pending_index == m_pending_usb_title_id_count) {
+            m_pending_usb_title_ids[m_pending_usb_title_id_count++] = key;
+        }
+        if (queue_stock_unmap && stock_pending_index == m_pending_stock_title_id_count) {
+            m_pending_stock_title_ids[m_pending_stock_title_id_count++] = key;
+        }
+
+        R_SUCCEED();
     }
 
     Result ContentMetaDatabaseImpl::Get(sf::Out<u64> out_size, const ContentMetaKey &key, const sf::OutBuffer &out_value) {
@@ -147,6 +228,7 @@ namespace ams::ncm {
     }
 
     Result ContentMetaDatabaseImpl::GetLatestContentMetaKey(sf::Out<ContentMetaKey> out_key, u64 id) {
+        const Result result = [&]() -> Result {
         R_TRY(this->EnsureEnabled());
 
         util::optional<ContentMetaKey> found_key = util::nullopt;
@@ -169,6 +251,11 @@ namespace ams::ncm {
 
         out_key.SetValue(*found_key);
         R_SUCCEED();
+        }();
+        lookup_trace::Metadata(usb_recovery::LookupOperation::MetadataLatestKey, m_storage_id,
+            id, R_SUCCEEDED(result) ? out_key.GetPointer()->version : 0, ContentType::Meta,
+            util::nullopt, result);
+        R_RETURN(result);
     }
 
     Result ContentMetaDatabaseImpl::ListApplication(sf::Out<s32> out_entries_total, sf::Out<s32> out_entries_written, const sf::OutArray<ApplicationContentMetaKey> &out_keys, ContentMetaType type) {
@@ -349,8 +436,41 @@ namespace ams::ncm {
         R_TRY(this->EnsureEnabled());
 
         /* Save and commit. */
-        R_TRY(m_kvs->Save());
-        R_RETURN(fs::CommitSaveData(m_mount_name));
+        R_TRY(m_kvs->SaveStreaming());
+        R_TRY(fs::CommitSaveData(m_mount_name));
+
+        /* DBI and CyberFoil call this public boundary, not InstallTaskBase.
+         * Only records whose NCAs were actually registered on USB are queued.
+         * Publish their paths after the normal metadata transaction commits;
+         * the work below uses SD/RAM only and cannot recurse into USB/NCM IPC. */
+        for (s32 i = 0; i < m_pending_usb_title_id_count; ++i) {
+            const auto &key = m_pending_usb_title_ids[i];
+            const void *meta_data = nullptr;
+            size_t meta_size = 0;
+            const Result get_result = this->GetContentMetaPointer(std::addressof(meta_data), std::addressof(meta_size), key);
+            if (ncm::ResultContentMetaNotFound::Includes(get_result)) {
+                continue;
+            }
+            R_TRY(get_result);
+            ContentId meta{}, control{}, program{};
+            R_UNLESS(impl::GetRegisteredUsbApplicationIds(std::addressof(meta), std::addressof(control),
+                std::addressof(program), meta_data, meta_size,
+                true), ncm::ResultContentNotFound());
+            R_TRY(RegisterUsbTitleContent(ProgramId{key.id}, meta, control, program));
+            R_TRY(RegisterUsbTitle(ProgramId{key.id}));
+        }
+        m_pending_usb_title_id_count = 0;
+
+        /* A committed real-SD application must win over every older USB
+         * association for the same title or opaque launch ID. This is done
+         * after the normal metadata transaction commits, so a failed SD
+         * metadata write cannot make a still-valid USB title disappear. */
+        for (s32 i = 0; i < m_pending_stock_title_id_count; ++i) {
+            R_TRY(UnregisterUsbTitle(ProgramId{m_pending_stock_title_ids[i].id}));
+        }
+        m_pending_stock_title_id_count = 0;
+
+        R_SUCCEED();
     }
 
     Result ContentMetaDatabaseImpl::HasContent(sf::Out<bool> out, const ContentMetaKey &key, const ContentId &content_id) {

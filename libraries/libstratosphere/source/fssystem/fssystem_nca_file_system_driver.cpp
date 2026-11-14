@@ -14,6 +14,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include "fssystem_empty_patch.hpp"
+#include "fssystem_patch_witness.hpp"
 #include "fssystem_read_only_block_cache_storage.hpp"
 #include "fssystem_hierarchical_sha256_storage.hpp"
 #include "fssystem_memory_resource_buffer_hold_storage.hpp"
@@ -21,6 +23,19 @@
 namespace ams::fssystem {
 
     namespace {
+
+        using PatchMetadataInput = patch_witness::Input<sizeof(NcaMetaDataHashData)>;
+        class ObservedPatchStorage final : public fs::SubStorage {
+            public:
+                using fs::SubStorage::SubStorage;
+                PatchMetadataInput *input{};
+                patch_witness::Sample *sample{};
+                Result Read(s64 offset, void *buffer, size_t size) override {
+                    const Result rc = fs::SubStorage::Read(offset, buffer, size);
+                    if (input && !sample->plain_seen && R_SUCCEEDED(rc)) input->Observe(offset, buffer, size);
+                    R_RETURN(rc);
+                }
+        };
 
         constexpr inline s32 AesCtrExTableCacheBlockSize = AesCtrCounterExtendedStorage::NodeSize;
         constexpr inline s32 AesCtrExTableCacheCount     = 8;
@@ -149,6 +164,19 @@ namespace ams::fssystem {
         /* Initialize our header reader for the fs index. */
         R_TRY(out_header_reader->Initialize(*m_reader, fs_index));
 
+        /* E1: metadata-only updates can validly omit the CTR-Ex bucket data.
+         * Validate before processing sparse/meta layers or constructing data
+         * storage. Never interpret an arbitrary unknown mode as ordinary CTR. */
+        const auto encryption_type = out_header_reader->GetEncryptionType();
+        const bool empty_ctr_ex_patch = !out_header_reader->GetPatchInfo().HasAesCtrExTable() &&
+            (encryption_type == NcaFsHeader::EncryptionType::AesCtrEx ||
+             encryption_type == NcaFsHeader::EncryptionType::AesCtrExSkipLayerHash);
+        if (empty_ctr_ex_patch) {
+            const bool has_original = (m_original_reader != nullptr && m_original_reader->HasFsInfo(fs_index)) ||
+                (ctx != nullptr && ctx->external_original_storage != nullptr);
+            R_TRY(impl::ValidateEmptyAesCtrExPatch(*out_header_reader, m_reader->GetFsSize(fs_index), has_original));
+        }
+
         /* Declare the storage we're opening. */
         std::shared_ptr<fs::IStorage> storage;
 
@@ -232,6 +260,16 @@ namespace ams::fssystem {
                     R_TRY(this->CreateAesXtsStorage(std::addressof(storage), std::move(storage), fs_data_offset));
                     break;
                 case NcaFsHeader::EncryptionType::AesCtr:
+                    R_TRY(this->CreateAesCtrStorage(std::addressof(storage), std::move(storage), fs_data_offset, out_header_reader->GetAesCtrUpperIv(), AlignmentStorageRequirement_None));
+                    break;
+                case NcaFsHeader::EncryptionType::AesCtrEx:
+                case NcaFsHeader::EncryptionType::AesCtrExSkipLayerHash:
+                    /* The validated empty-table case has no patch data. This
+                     * decrypts only metadata that the normal indirect layer
+                     * consumes below. That layer retains its zero-sized patch
+                     * data storage, so references to patch bytes still fail.
+                     * Original-NCA decryption and final hashes are unchanged. */
+                    AMS_ASSERT(empty_ctr_ex_patch);
                     R_TRY(this->CreateAesCtrStorage(std::addressof(storage), std::move(storage), fs_data_offset, out_header_reader->GetAesCtrUpperIv(), AlignmentStorageRequirement_None));
                     break;
                 case NcaFsHeader::EncryptionType::AesCtrSkipLayerHash:
@@ -985,32 +1023,66 @@ namespace ams::fssystem {
         AMS_ASSERT(out_aes_ctr_ex_meta != nullptr);
         AMS_ASSERT(out_indirect_meta != nullptr);
         AMS_ASSERT(base_storage != nullptr);
-        AMS_ASSERT(patch_info.HasAesCtrExTable());
-        AMS_ASSERT(patch_info.HasIndirectTable());
-        AMS_ASSERT(util::IsAligned<s64>(patch_info.aes_ctr_ex_size, NcaHeader::XtsBlockSize));
 
-        /* Validate patch info extents. */
-        R_UNLESS(patch_info.indirect_size > 0,                                                                 fs::ResultInvalidNcaPatchInfoIndirectSize());
-        R_UNLESS(patch_info.aes_ctr_ex_size >= 0,                                                              fs::ResultInvalidNcaPatchInfoAesCtrExSize());
-        R_UNLESS(patch_info.indirect_size + patch_info.indirect_offset <= patch_info.aes_ctr_ex_offset,        fs::ResultInvalidNcaPatchInfoAesCtrExOffset());
-        R_UNLESS(patch_info.aes_ctr_ex_offset + patch_info.aes_ctr_ex_size <= meta_data_hash_data_info.offset, fs::ResultRomNcaInvalidPatchMetaDataHashDataOffset());
+        /* E2: a metadata-only patch has an indirect table but may have zero
+         * counter bytes. Validate in release builds too, then retain the same
+         * CTR -> metadata SHA -> hierarchical integrity verification chain. */
+        R_UNLESS(patch_info.indirect_size > 0, fs::ResultInvalidNcaPatchInfoIndirectSize());
+        R_UNLESS(patch_info.aes_ctr_ex_size >= 0 && util::IsAligned<s64>(patch_info.aes_ctr_ex_size, NcaHeader::XtsBlockSize), fs::ResultInvalidNcaPatchInfoAesCtrExSize());
+        R_UNLESS(meta_data_hash_data_info.size == sizeof(NcaMetaDataHashData), fs::ResultRomNcaInvalidPatchMetaDataHashDataSize());
 
         /* Get the base storage size. */
         s64 base_size;
         R_TRY(base_storage->GetSize(std::addressof(base_size)));
 
         /* Check that extents remain within range. */
-        R_UNLESS(patch_info.indirect_offset + patch_info.indirect_size <= base_size,     fs::ResultNcaBaseStorageOutOfRangeE());
-        R_UNLESS(patch_info.aes_ctr_ex_offset + patch_info.aes_ctr_ex_size <= base_size, fs::ResultNcaBaseStorageOutOfRangeB());
+        R_UNLESS(base_size >= 0 && patch_info.indirect_offset >= 0 && patch_info.indirect_offset <= base_size &&
+                 patch_info.indirect_size <= base_size - patch_info.indirect_offset, fs::ResultNcaBaseStorageOutOfRangeE());
+        R_UNLESS(patch_info.aes_ctr_ex_offset >= 0 && patch_info.aes_ctr_ex_offset <= base_size &&
+                 patch_info.aes_ctr_ex_size <= base_size - patch_info.aes_ctr_ex_offset, fs::ResultNcaBaseStorageOutOfRangeB());
+        R_UNLESS(patch_info.aes_ctr_ex_offset >= patch_info.indirect_offset &&
+                 patch_info.indirect_size <= patch_info.aes_ctr_ex_offset - patch_info.indirect_offset, fs::ResultInvalidNcaPatchInfoAesCtrExOffset());
 
         /* Check that metadata hash data extents remain within range. */
         const s64 meta_data_hash_data_offset = meta_data_hash_data_info.offset;
         const s64 meta_data_hash_data_size   = util::AlignUp<s64>(meta_data_hash_data_info.size, NcaHeader::CtrBlockSize);
-        R_UNLESS(meta_data_hash_data_offset + meta_data_hash_data_size <= base_size, fs::ResultNcaBaseStorageOutOfRangeB());
+        R_UNLESS(meta_data_hash_data_offset >= 0 && meta_data_hash_data_offset <= base_size &&
+                 meta_data_hash_data_size <= base_size - meta_data_hash_data_offset, fs::ResultNcaBaseStorageOutOfRangeB());
+        R_UNLESS(meta_data_hash_data_offset >= patch_info.aes_ctr_ex_offset &&
+                 patch_info.aes_ctr_ex_size <= meta_data_hash_data_offset - patch_info.aes_ctr_ex_offset, fs::ResultRomNcaInvalidPatchMetaDataHashDataOffset());
+        R_UNLESS(offset >= 0 && offset <= std::numeric_limits<s64>::max() - patch_info.indirect_offset, fs::ResultNcaBaseStorageOutOfRangeB());
 
         /* Create the encrypted storage. */
-        auto enc_storage = fssystem::AllocateShared<fs::SubStorage>(std::move(base_storage), patch_info.indirect_offset, meta_data_hash_data_offset + meta_data_hash_data_size - patch_info.indirect_offset);
+        const s64 encrypted_size = meta_data_hash_data_offset + meta_data_hash_data_size - patch_info.indirect_offset;
+        auto *sample = patch_witness::Find(m_reader.get());
+        PatchMetadataInput input{meta_data_hash_data_offset - patch_info.indirect_offset};
+        std::shared_ptr<ObservedPatchStorage> observed;
+        std::shared_ptr<fs::SubStorage> enc_storage;
+        if (sample) {
+            sample->offset = meta_data_hash_data_offset;
+            sample->size = sizeof(NcaMetaDataHashData);
+            std::memcpy(sample->expected.data(), meta_data_hash_data_info.hash.value, sample->expected.size());
+            observed = fssystem::AllocateShared<ObservedPatchStorage>(base_storage, patch_info.indirect_offset, encrypted_size);
+            if (observed) {
+                observed->input = &input;
+                observed->sample = sample;
+                enc_storage = observed;
+            }
+        }
+        if (!enc_storage) {
+            enc_storage = fssystem::AllocateShared<fs::SubStorage>(std::move(base_storage), patch_info.indirect_offset, encrypted_size);
+        }
         R_UNLESS(enc_storage != nullptr, fs::ResultAllocationMemoryFailedAllocateShared());
+        ON_SCOPE_EXIT {
+            if (observed) {
+                observed->input = nullptr; // Construction is synchronous. No stack pointer escapes to readers.
+                observed->sample = nullptr;
+                if (input.count == sizeof(input.bytes)) {
+                    crypto::GenerateSha256(sample->cipher.data(), sample->cipher.size(), input.bytes, sizeof(input.bytes));
+                    sample->cipher_seen = true;
+                }
+            }
+        };
 
         /* Create the decrypted storage. */
         std::shared_ptr<fs::IStorage> decrypted_storage;
@@ -1122,6 +1194,12 @@ namespace ams::fssystem {
         /* Check the meta data hash data hash. */
         u8 meta_data_hash_data_hash[IHash256Generator::HashSize];
         m_hash_generator_factory_selector->GetFactory(fssystem::HashAlgorithmType_Sha2)->GenerateHash(meta_data_hash_data_hash, sizeof(meta_data_hash_data_hash), std::addressof(meta_data_hash_data), sizeof(meta_data_hash_data));
+        if (auto *sample = patch_witness::Find(m_reader.get()); sample &&
+            sample->offset == meta_data_hash_data_info.offset && sample->size == sizeof(meta_data_hash_data) &&
+            std::memcmp(sample->expected.data(), meta_data_hash_data_info.hash.value, sample->expected.size()) == 0) {
+            std::memcpy(sample->plain.data(), meta_data_hash_data_hash, sample->plain.size());
+            sample->plain_seen = true;
+        }
         R_UNLESS(crypto::IsSameBytes(meta_data_hash_data_hash, std::addressof(meta_data_hash_data_info.hash), sizeof(meta_data_hash_data_hash)), fs::ResultInvalidNcaMetaDataHashDataHash());
 
         /* Set the out layer info storage, if necessary. */

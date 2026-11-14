@@ -42,8 +42,13 @@ namespace ams {
             /* Initialize other services. */
             R_ABORT_UNLESS(pmdmntInitialize());
             R_ABORT_UNLESS(pminfoInitialize());
+            /* Initialize the NCM client before any MITM module starts.  The
+             * USB-content monitor uses NCM only after Horizon is settled, but
+             * constructing the client from that worker thread can race the
+             * service/session setup and leave boot stuck at the Nintendo
+             * splash.  This is also the ordering used by the stock AMS MITM
+             * startup path. */
             ncm::Initialize();
-
             /* Verify that we can sanely execute. */
             ams::CheckApiVersion();
         }

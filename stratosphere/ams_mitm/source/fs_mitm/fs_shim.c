@@ -65,6 +65,22 @@ Result fsOpenFileSystemWithIdFwd(Service* s, FsFileSystem* out, const char* cont
     );
 }
 
+Result fsOpenDataFileSystemByProgramIdFwd(Service* s, FsFileSystem* out, u64 program_id) {
+    return serviceDispatchIn(s, 9, program_id, .out_num_objects = 1, .out_objects = &out->s);
+}
+
+Result fsOpenMultiCommitManagerFwd(Service* s, Service* out) {
+    return _fsOpenSession(s, out, 1200);
+}
+
+Result fsOpenContentStorageFileSystemFwd(Service* s, FsFileSystem* out, FsContentStorageId id) {
+    const u32 tmp = id;
+    return serviceDispatchIn(s, 110, tmp,
+        .out_num_objects = 1,
+        .out_objects = &out->s,
+    );
+}
+
 Result fsOpenBisStorageFwd(Service* s, FsStorage* out, FsBisPartitionId partition_id) {
     const u32 tmp = partition_id;
     return serviceDispatchIn(s, 12, tmp,
@@ -173,4 +189,58 @@ Result fsRegisterProgramIndexMapInfoFwd(Service* s, const void *buf, size_t buf_
         .buffer_attrs = { SfBufferAttr_In | SfBufferAttr_HipcMapAlias },
         .buffers = { { buf, buf_size } },
     );
+}
+Result fsOpenFileSystemWithIdAndAttributesFwd(Service* s, FsFileSystem* out, u64 id, FsFileSystemType fsType, const char* path, u8 attributes) {
+    if (hosversionBefore(16, 0, 0)) {
+        return fsOpenFileSystemWithIdObsoleteFwd(s, out, path, id, fsType);
+    }
+    const struct { u8 attr; u8 pad[3]; u32 type; u64 id; } in = { attributes, {0}, fsType, id };
+    _Static_assert(sizeof(in) == 16, "Unexpected cmd10 request layout");
+    return serviceDispatchIn(s, 10, in,
+        .buffer_attrs = { SfBufferAttr_HipcPointer | SfBufferAttr_In },
+        .buffers = { { path, FS_MAX_PATH } },
+        .out_num_objects = 1,
+        .out_objects = &out->s
+    );
+}
+
+Result fsGetProgramIdFwd(Service* s, u64* out, const char* path, FsContentAttributes attr) {
+    if (hosversionBefore(17, 0, 0)) {
+        return MAKERESULT(Module_Libnx, LibnxError_IncompatSysVer);
+    }
+
+    const u8 in = (u8)attr;
+    return serviceDispatchInOut(s, 618, in, *out,
+        .buffer_attrs = { SfBufferAttr_HipcPointer | SfBufferAttr_In },
+        .buffers = { { path, FS_MAX_PATH } },
+    );
+}
+
+Result fsGetRightsIdAndKeyGenerationByPathFwd(Service* s, const char* path, FsContentAttributes attr, u8* out_key_generation, FsRightsId* out_rights_id) {
+    struct {
+        u8 key_generation;
+        u8 pad[7];
+        FsRightsId rights_id;
+    } out = {0};
+    _Static_assert(sizeof(out) == 0x18, "Unexpected rights-id response layout");
+
+    Result rc;
+    if (hosversionAtLeast(16, 0, 0)) {
+        const u8 in = (u8)attr;
+        rc = serviceDispatchInOut(s, 610, in, out,
+            .buffer_attrs = { SfBufferAttr_HipcPointer | SfBufferAttr_In },
+            .buffers = { { path, FS_MAX_PATH } },
+        );
+    } else {
+        rc = serviceDispatchOut(s, 610, out,
+            .buffer_attrs = { SfBufferAttr_HipcPointer | SfBufferAttr_In },
+            .buffers = { { path, FS_MAX_PATH } },
+        );
+    }
+
+    if (R_SUCCEEDED(rc)) {
+        *out_key_generation = out.key_generation;
+        *out_rights_id = out.rights_id;
+    }
+    return rc;
 }

@@ -16,6 +16,9 @@
 #include <stratosphere.hpp>
 #include "ncm_content_storage_impl.hpp"
 #include "ncm_fs_utils.hpp"
+#include "ncm_lookup_trace.hpp"
+#include "ncm_usb_content_header.hpp"
+#include "ncm_usb_content_file_system.hpp"
 
 namespace ams::ncm {
 
@@ -349,6 +352,7 @@ namespace ams::ncm {
     }
 
     void ContentStorageImpl::InvalidateFileCache() {
+        impl::CancelUsbVerificationDigest(this);
         if (m_cached_content_id != InvalidContentId) {
             fs::CloseFile(m_cached_file_handle);
             m_cached_content_id = InvalidContentId;
@@ -456,6 +460,7 @@ namespace ams::ncm {
     }
 
     Result ContentStorageImpl::Has(sf::Out<bool> out, ContentId content_id) {
+        const Result result = [&]() -> Result {
         R_TRY(this->EnsureEnabled());
 
         /* Create the content path. */
@@ -467,9 +472,14 @@ namespace ams::ncm {
         R_TRY(fs::HasFile(std::addressof(has), content_path));
         out.SetValue(has);
         R_SUCCEED();
+        }();
+        lookup_trace::Storage(usb_recovery::LookupOperation::NativeHas, StorageId::None, content_id,
+            result, R_SUCCEEDED(result), R_SUCCEEDED(result) && *out.GetPointer(), m_root_path);
+        R_RETURN(result);
     }
 
     Result ContentStorageImpl::GetPath(sf::Out<Path> out, ContentId content_id) {
+        const Result result = [&]() -> Result {
         R_TRY(this->EnsureEnabled());
 
         /* Create the content path. */
@@ -480,8 +490,18 @@ namespace ams::ncm {
         Path common_path;
         R_TRY(fs::ConvertToFsCommonPath(common_path.str, sizeof(common_path.str), content_path));
 
+        const Result availability = impl::CheckUsbContentPathAvailable(content_id, content_path, common_path.str);
+        if (R_FAILED(availability)) {
+            impl::RecordUsbVerificationRead(content_id, content_path, -1, 0, availability);
+            R_RETURN(availability);
+        }
+
         out.SetValue(common_path);
         R_SUCCEED();
+        }();
+        lookup_trace::Storage(usb_recovery::LookupOperation::NativePath, StorageId::None, content_id,
+            result, R_SUCCEEDED(result), false, m_root_path);
+        R_RETURN(result);
     }
 
     Result ContentStorageImpl::GetPlaceHolderPath(sf::Out<Path> out, PlaceHolderId placeholder_id) {
@@ -704,11 +724,24 @@ namespace ams::ncm {
         PathString content_path;
         MakeContentPath(std::addressof(content_path), content_id, m_make_content_path_func, m_root_path);
 
-        /* Open the content file. */
-        R_TRY(this->OpenContentIdFile(content_id));
-
-        /* Read from the requested offset up to the requested size. */
-        R_RETURN(fs::ReadFile(m_cached_file_handle, offset, buf.GetPointer(), buf.GetSize()));
+        const Result result = [&]() -> Result {
+            R_TRY(this->OpenContentIdFile(content_id));
+            if (offset == 0 && buf.GetSize() != 0) {
+                impl::BeginUsbVerificationDigest(this, content_id, content_path, m_cached_file_handle);
+            }
+            // Keep exact-read semantics: never pad a failed/short NCA read.
+            R_RETURN(fs::ReadFile(m_cached_file_handle, offset, buf.GetPointer(), buf.GetSize()));
+        }();
+        // Hash the actual reply buffer, not a second read of the USB file.
+        // Observation is deliberately unable to replace the native result.
+        impl::FinishUsbVerificationDigest(this, offset, buf.GetPointer(), buf.GetSize(), result);
+        // A generation-bound USB file cannot survive detach/reinsert. Do not
+        // cache the failed handle indefinitely. Return the original failure;
+        // only a subsequent caller request may open the currently mounted file.
+        // Never replay part of a verification read across two media generations.
+        if (R_FAILED(result)) this->InvalidateFileCache();
+        impl::RecordUsbVerificationRead(content_id, content_path, offset, buf.GetSize(), result);
+        R_RETURN(result);
     }
 
     Result ContentStorageImpl::GetRightsIdFromPlaceHolderIdDeprecated(sf::Out<ams::fs::RightsId> out_rights_id, PlaceHolderId placeholder_id) {
@@ -733,7 +766,7 @@ namespace ams::ncm {
         R_TRY(this->GetPlaceHolderPath(std::addressof(path), placeholder_id));
 
         /* Get the rights id for the placeholder id. */
-        R_RETURN(GetRightsId(out_rights_id.GetPointer(), path, attr));
+        R_RETURN(GetUsbAwareRightsId(out_rights_id.GetPointer(), path, attr));
     }
 
     Result ContentStorageImpl::GetRightsIdFromContentIdDeprecated(sf::Out<ams::fs::RightsId> out_rights_id, ContentId content_id) {
@@ -764,7 +797,7 @@ namespace ams::ncm {
 
         /* Obtain the rights id for the content. */
         ncm::RightsId rights_id;
-        R_TRY(GetRightsId(std::addressof(rights_id), path, attr));
+        R_TRY(GetUsbAwareRightsId(std::addressof(rights_id), path, attr));
 
         /* Store the rights id to the cache. */
         m_rights_id_cache->Store(content_id, rights_id);
@@ -901,7 +934,7 @@ namespace ams::ncm {
 
         /* Get the rights id. */
         ncm::RightsId rights_id;
-        R_TRY(GetRightsId(std::addressof(rights_id), common_path, attr));
+        R_TRY(GetUsbAwareRightsId(std::addressof(rights_id), common_path, attr));
         m_rights_id_cache->Store(cache_content_id, rights_id);
 
         /* Set output. */
@@ -927,7 +960,7 @@ namespace ams::ncm {
 
         /* Obtain the program id for the content. */
         ncm::ProgramId program_id;
-        R_TRY(fs::GetProgramId(std::addressof(program_id), path.str, attr));
+        R_TRY(GetUsbAwareProgramId(std::addressof(program_id), path, attr));
 
         out.SetValue(program_id);
         R_SUCCEED();

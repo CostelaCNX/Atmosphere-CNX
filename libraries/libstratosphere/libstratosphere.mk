@@ -33,7 +33,7 @@ else
 ATMOSPHERE_OPTIMIZATION_FLAG := -O2
 endif
 
-DEFINES	    := $(ATMOSPHERE_DEFINES) -DATMOSPHERE_IS_STRATOSPHERE -D_GNU_SOURCE
+DEFINES	    := $(ATMOSPHERE_DEFINES) -DATMOSPHERE_IS_STRATOSPHERE -D_GNU_SOURCE -DFF_FS_MINIMIZE=0
 SETTINGS    := $(ATMOSPHERE_SETTINGS) $(ATMOSPHERE_OPTIMIZATION_FLAG) -Wextra -Werror -Wno-missing-field-initializers -flto -Wno-error=unused-result
 CFLAGS      := $(ATMOSPHERE_CFLAGS) $(SETTINGS) $(DEFINES) $(INCLUDE)
 CXXFLAGS    := $(CFLAGS) $(ATMOSPHERE_CXXFLAGS)
@@ -48,6 +48,10 @@ endif
 
 SOURCES     += $(call ALL_SOURCE_DIRS,../libvapours/source)
 SOURCES     += $(call UNFILTERED_SOURCE_DIRS,source/os)
+# USB-only FatFs with 64-bit sector addressing. Do not change the emuMMC or
+# bootloader FatFs ABI/configuration. USB glue bounds all I/O to one partition.
+SOURCES     += usb_fatfs
+INCLUDES    += usb_fatfs
 
 ifeq ($(ATMOSPHERE_BOARD),nx-hac-001)
 LIBS        := -lnx
@@ -76,6 +80,7 @@ export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) $(CURDIR)/include \
 			$(foreach dir,$(DATA),$(CURDIR)/$(dir))
 
 CFILES      :=	$(call FIND_SOURCE_FILES,$(SOURCES),c)
+CFILES      :=	$(filter-out diskio.c,$(CFILES))
 CPPFILES    :=	$(call FIND_SOURCE_FILES,$(SOURCES),cpp)
 SFILES      :=	$(call FIND_SOURCE_FILES,$(SOURCES),s)
 
@@ -143,10 +148,28 @@ hos_version_api_weak_for_unit_test.o: CXXFLAGS += -fno-lto
 pm_info_api_weak.o: CXXFLAGS += -fno-lto
 hos_stratosphere_api.o: CXXFLAGS += -fno-lto
 
+# FatFs R0.13c is reused for the opt-in writable USB volume. Its legacy C
+# sources contain one intentional switch fall-through and a code-page helper
+# that is unused with the configured ANSI API; keep the global -Werror policy
+# for Atmosphere sources while relaxing only these vendored-object warnings.
+# Keep the vendored filesystem within the fixed Nexus package3 KIP budget.
+# Only ff.c uses this size preference; USB transport flags remain unchanged.
+ff.o: CFLAGS += -Wno-error=implicit-fallthrough -Wno-error=unused-function -Os
+
 init_operator_new.o: CXXFLAGS += -fno-lto
 init_libnx_shim.os.horizon.o: CXXFLAGS += -fno-lto
 
 result_get_name.o: CXXFLAGS += -fno-lto
+
+# The experimental USB launch gate lives in one PGL translation unit. Keep
+# this object out of LTO so an incremental test build does not require several
+# gigabytes of compiler memory on Windows.
+pgl_srv_shell.o: CXXFLAGS += -fno-lto -O0
+ncm_usb_title_map.o: CXXFLAGS += -fno-lto -O0
+# The metadata commit hook includes the large ContentMeta/NCM headers. Keep
+# this incremental object out of LTO as well so Windows builds do not consume
+# nearly all available memory just to regenerate the optional USB association.
+ncm_content_meta_database_impl.o: CXXFLAGS += -fno-lto -O0
 
 crypto_sha256_generator.o: CXXFLAGS += -fno-lto
 
@@ -176,4 +199,3 @@ endif
 #---------------------------------------------------------------------------------------
 endif
 #---------------------------------------------------------------------------------------
-

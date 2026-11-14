@@ -110,6 +110,28 @@ namespace ams::ncm {
         R_RETURN(g_content_manager->InactivateContentMetaDatabase(storage_id));
     }
 
+    Result GetUsbContentStatus(UsbContentStatus *out) {
+        R_UNLESS(out != nullptr, usb::ResultInvalidParameter());
+        sf::Out<UsbContentStatus> sf_out(out);
+        R_RETURN(g_content_manager->GetUsbContentStatus(sf_out));
+    }
+
+    Result SetUsbContentRouteEnabled(bool enabled) {
+        R_RETURN(g_content_manager->SetUsbContentRouteEnabled(enabled));
+    }
+
+    Result RefreshUsbContentStatus() {
+        R_RETURN(g_content_manager->RefreshUsbContentStatus());
+    }
+
+    Result SetUsbContentNativePathEnabled(bool enabled) {
+        R_RETURN(g_content_manager->SetUsbContentNativePathEnabled(enabled));
+    }
+
+    Result SetUsbContentMetadataRouteEnabled(bool enabled) {
+        R_RETURN(g_content_manager->SetUsbContentMetadataRouteEnabled(enabled));
+    }
+
     Result InvalidateRightsIdCache() {
         R_RETURN(g_content_manager->InvalidateRightsIdCache());
     }

@@ -14,6 +14,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include "ncm_recovery_interface.hpp"
 
 namespace ams {
 
@@ -26,7 +27,9 @@ namespace ams {
 
             void *Allocate(size_t size) {
                 void *mem = lmem::AllocateFromExpHeap(g_heap_handle, size);
-                ncm::GetHeapState().Allocate(size);
+                if (mem != nullptr) {
+                    ncm::GetHeapState().Allocate(size);
+                }
                 return mem;
             }
 
@@ -64,16 +67,16 @@ namespace ams {
 
             class ContentManagerServerManager : public sf::hipc::ServerManager<ContentManagerNumServers, ContentManagerServerOptions, ContentManagerMaxSessions> {
                 private:
-                    using ServiceImpl = ncm::ContentManagerImpl;
+                    using ServiceImpl = ncm::recovery::ContentManager;
                 private:
                     os::ThreadType m_thread;
-                    sf::SharedPointer<ncm::IContentManager> m_manager;
+                    sf::SharedPointer<ncm::recovery::IRecoveryContentManager> m_manager;
                 private:
                     static void ThreadFunction(void *_this) {
                         reinterpret_cast<ContentManagerServerManager *>(_this)->LoopProcess();
                     }
                 public:
-                    explicit ContentManagerServerManager(sf::SharedPointer<ncm::IContentManager> manager) : m_manager(manager) { /* ... */ }
+                    explicit ContentManagerServerManager(sf::SharedPointer<ncm::recovery::IRecoveryContentManager> manager) : m_manager(manager) { /* ... */ }
 
                     ams::Result Initialize() {
                         R_RETURN(this->RegisterObjectForServer(m_manager, ContentManagerServiceName, ContentManagerManagerSessions));
@@ -135,7 +138,7 @@ namespace ams {
                     }
             };
 
-            sf::UnmanagedServiceObject<ncm::IContentManager, ncm::ContentManagerImpl> g_ncm_manager_service_object;
+            sf::UnmanagedServiceObject<ncm::recovery::IRecoveryContentManager, ncm::recovery::ContentManager> g_ncm_manager_service_object;
             ContentManagerServerManager g_ncm_server_manager(g_ncm_manager_service_object.GetShared());
 
             sf::UnmanagedServiceObject<lr::ILocationResolverManager, lr::LocationResolverManagerImpl> g_lr_manager_service_object;

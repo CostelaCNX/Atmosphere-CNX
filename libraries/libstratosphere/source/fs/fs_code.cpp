@@ -14,6 +14,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/usb/usb_content_proxy.hpp>
 #include "fsa/fs_mount_utils.hpp"
 #include "impl/fs_file_system_service_object_adapter.hpp"
 #include "impl/fs_file_system_proxy_service_object.hpp"
@@ -69,7 +70,66 @@ namespace ams::fs {
             return GetReference(g_stratosphere_romfs_fs);
         }
 
+        bool IsUsbContentPath(const char *path) {
+            constexpr const char UsbContentPrefix[] = "usbcontent:";
+            return path != nullptr && std::strncmp(path, UsbContentPrefix, sizeof(UsbContentPrefix) - 1) == 0;
+        }
+
+        Result OpenUsbCodeFileSystem(CodeVerificationData *out_verification_data, std::unique_ptr<fsa::IFileSystem> *out, const char *path, ncm::ProgramId program_id) {
+            R_UNLESS(out_verification_data != nullptr && out != nullptr && path != nullptr, fs::ResultInvalidArgument());
+
+            const size_t path_length = strnlen(path, fs::EntryNameLengthMax);
+            R_UNLESS(path_length > 0 && path_length < fs::EntryNameLengthMax, fs::ResultInvalidPath());
+
+            /* This function is only called for a private usbcontent: path.
+             * Keep the boundary strict: a USB title must be opened by the
+             * ams:usb filesystem service, never by Horizon's StorageId::Host
+             * code-file API. The latter can return a nominal filesystem on
+             * newer HOS versions without reading the external NCA, which
+             * leaves the Home menu with a permanent spinner. */
+            R_UNLESS(IsUsbContentPath(path), fs::ResultInvalidPath());
+
+            os::NativeHandle service_handle;
+            R_TRY(sm::GetServiceHandle(std::addressof(service_handle), sm::ServiceName::Encode(usb::content::ServiceName)));
+
+            Service usb_service{};
+            serviceCreate(std::addressof(usb_service), service_handle);
+            ON_SCOPE_EXIT { serviceClose(std::addressof(usb_service)); };
+
+            Service filesystem_service{};
+            auto filesystem_guard = SCOPE_GUARD {
+                if (serviceIsActive(std::addressof(filesystem_service))) {
+                    serviceClose(std::addressof(filesystem_service));
+                }
+            };
+
+            R_TRY(serviceDispatchIn(std::addressof(usb_service), usb::content::CommandId_OpenCodeFileSystem, program_id,
+                .buffer_attrs = {
+                    SfBufferAttr_HipcMapAlias | SfBufferAttr_Out,
+                    SfBufferAttr_HipcMapAlias | SfBufferAttr_In,
+                },
+                .buffers = {
+                    { out_verification_data, sizeof(*out_verification_data) },
+                    { path, path_length + 1 },
+                },
+                .out_num_objects = 1,
+                .out_objects = std::addressof(filesystem_service)));
+
+            FsFileSystem remote_filesystem{};
+            remote_filesystem.s = filesystem_service;
+            auto fsa = std::make_unique<fs::RemoteFileSystem>(remote_filesystem);
+            R_UNLESS(fsa != nullptr, fs::ResultAllocationMemoryFailedInCodeA());
+
+            filesystem_guard.Cancel();
+            *out = std::move(fsa);
+            R_SUCCEED();
+        }
+
         Result OpenCodeFileSystemImpl(CodeVerificationData *out_verification_data, std::unique_ptr<fsa::IFileSystem> *out, const char *path, fs::ContentAttributes attr, ncm::ProgramId program_id, ncm::StorageId storage_id) {
+            if (IsUsbContentPath(path)) {
+                R_RETURN(OpenUsbCodeFileSystem(out_verification_data, out, path, program_id));
+            }
+
             /* Print a path suitable for the remote service. */
             fssrv::sf::Path sf_path;
             R_TRY(FormatToFspPath(std::addressof(sf_path), "%s", path));
@@ -153,6 +213,13 @@ namespace ams::fs {
         }
 
         Result OpenSdCardCodeOrStratosphereCodeOrCodeFileSystemImpl(CodeVerificationData *out_verification_data, std::unique_ptr<fsa::IFileSystem> *out, const char *path, fs::ContentAttributes attr, ncm::ProgramId program_id, ncm::StorageId storage_id) {
+            /* An exact USB path is already bound by Loader. Do not probe the
+             * SD override/package paths first, since a nominal SD success
+             * would hide the external NCA from the process. */
+            if (IsUsbContentPath(path)) {
+                R_RETURN(OpenCodeFileSystemImpl(out_verification_data, out, path, attr, program_id, storage_id));
+            }
+
             /* If we can open an sd card code fs, use it. */
             R_SUCCEED_IF(R_SUCCEEDED(OpenSdCardCodeFileSystemImpl(out, program_id)));
 
@@ -353,6 +420,20 @@ namespace ams::fs {
                         m_hbl_fs.emplace(std::move(fsa));
                     }
 
+                    /* A USB launch can arrive with a complete ExeFS provider
+                     * already retained in Loader's external-code map. Do not
+                     * require the nominal SD NCA to exist merely to construct
+                     * the Atmosphere view; DoOpenFile below will consume the
+                     * provider. The separate base-code mount still supplies
+                     * the NCA verification data used by process creation. */
+                    if (!is_hbl && fssystem::GetExternalCodeFileSystem(program_id) != nullptr) {
+                        std::memset(out_verification_data, 0, sizeof(*out_verification_data));
+                        m_program_id  = program_id;
+                        m_storage_id  = storage_id;
+                        m_initialized = true;
+                        R_SUCCEED();
+                    }
+
                     /* Open the code filesystem. */
                     std::unique_ptr<fsa::IFileSystem> fsa;
                     R_TRY(OpenSdCardCodeOrStratosphereCodeOrCodeFileSystemImpl(out_verification_data, std::addressof(fsa), path, attr, program_id, storage_id));
@@ -386,6 +467,7 @@ namespace ams::fs {
                     }
 
                     /* If we're not hbl, fall back to our code filesystem. */
+                    R_UNLESS(m_code_fs.has_value(), fs::ResultPathNotFound());
                     R_RETURN(m_code_fs->OpenFile(out_file, path, mode));
                 }
         };

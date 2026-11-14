@@ -82,20 +82,58 @@ namespace ams::sf {
         private:
             impl::SharedPointerBase *m_out;
             cmif::DomainObjectId *m_object_id;
+            #if AMS_SF_MITM_SUPPORTED
+            std::shared_ptr<::Service> *m_forward_service;
+            #endif
         private:
-            Out(impl::SharedPointerBase *p, cmif::DomainObjectId *o = nullptr) : m_out(p), m_object_id(o) { /* ... */ }
+            Out(impl::SharedPointerBase *p, cmif::DomainObjectId *o = nullptr
+                #if AMS_SF_MITM_SUPPORTED
+                , std::shared_ptr<::Service> *f = nullptr
+                #endif
+            ) : m_out(p), m_object_id(o)
+                #if AMS_SF_MITM_SUPPORTED
+                , m_forward_service(f)
+                #endif
+            { /* ... */ }
         public:
-            Out(const Out &rhs) : m_out(rhs.m_out), m_object_id(rhs.m_object_id) { /* ... */ }
+            Out(const Out &rhs) : m_out(rhs.m_out), m_object_id(rhs.m_object_id)
+                #if AMS_SF_MITM_SUPPORTED
+                , m_forward_service(rhs.m_forward_service)
+                #endif
+            { /* ... */ }
 
-            Out(SharedPointer<ServiceImpl> *out, cmif::DomainObjectId *o = nullptr) : m_out(std::addressof(out->m_base)), m_object_id(o) { /* .... */ }
+            Out(SharedPointer<ServiceImpl> *out, cmif::DomainObjectId *o = nullptr
+                #if AMS_SF_MITM_SUPPORTED
+                , std::shared_ptr<::Service> *f = nullptr
+                #endif
+            ) : m_out(std::addressof(out->m_base)), m_object_id(o)
+                #if AMS_SF_MITM_SUPPORTED
+                , m_forward_service(f)
+                #endif
+            { /* .... */ }
 
             template<typename U> requires std::derived_from<U, ServiceImpl>
-            Out(Out<SharedPointer<U>> out) : m_out(out.m_out), m_object_id(out.m_object_id) { /* ... */ }
+            Out(Out<SharedPointer<U>> out) : m_out(out.m_out), m_object_id(out.m_object_id)
+                #if AMS_SF_MITM_SUPPORTED
+                , m_forward_service(out.m_forward_service)
+                #endif
+            { /* ... */ }
 
             template<typename U> requires std::derived_from<U, ServiceImpl>
-            Out(SharedPointer<U> *out, cmif::DomainObjectId *o = nullptr) : m_out(std::addressof(out->m_base)), m_object_id(o)  { /* .... */ }
+            Out(SharedPointer<U> *out, cmif::DomainObjectId *o = nullptr
+                #if AMS_SF_MITM_SUPPORTED
+                , std::shared_ptr<::Service> *f = nullptr
+                #endif
+            ) : m_out(std::addressof(out->m_base)), m_object_id(o)
+                #if AMS_SF_MITM_SUPPORTED
+                , m_forward_service(f)
+                #endif
+            { /* .... */ }
 
             void SetValue(SharedPointer<ServiceImpl> s, cmif::DomainObjectId new_object_id = cmif::InvalidDomainObjectId) {
+                #if AMS_SF_MITM_SUPPORTED
+                if (m_forward_service != nullptr) { m_forward_service->reset(); }
+                #endif
                 *m_out = std::move(s.m_base);
                 if (new_object_id != cmif::InvalidDomainObjectId) {
                     AMS_ABORT_UNLESS(m_object_id != nullptr);
@@ -105,12 +143,26 @@ namespace ams::sf {
 
             template<typename U> requires std::derived_from<U, ServiceImpl>
             void SetValue(SharedPointer<U> s, cmif::DomainObjectId new_object_id = cmif::InvalidDomainObjectId) {
+                #if AMS_SF_MITM_SUPPORTED
+                if (m_forward_service != nullptr) { m_forward_service->reset(); }
+                #endif
                 *m_out = std::move(s.m_base);
                 if (new_object_id != cmif::InvalidDomainObjectId) {
                     AMS_ABORT_UNLESS(m_object_id != nullptr);
                     *m_object_id = new_object_id;
                 }
             }
+
+            #if AMS_SF_MITM_SUPPORTED
+            template<typename U> requires std::derived_from<U, ServiceImpl> && sf::IsMitmServiceObject<U>
+            void SetMitmValue(SharedPointer<U> s, std::shared_ptr<::Service> forward_service, cmif::DomainObjectId new_object_id = cmif::InvalidDomainObjectId) {
+                AMS_ABORT_UNLESS(m_forward_service != nullptr);
+                AMS_ABORT_UNLESS(forward_service != nullptr);
+                this->SetValue(std::move(s), new_object_id);
+                *m_forward_service = std::move(forward_service);
+            }
+
+            #endif
 
             class DerefProxy {
                 template<typename>
@@ -138,12 +190,15 @@ namespace ams::sf {
 
             template<typename U>
             Out<SharedPointer<U>> DownCast() {
-                return Out<SharedPointer<U>>(m_out, m_object_id);
+                return Out<SharedPointer<U>>(m_out, m_object_id
+                    #if AMS_SF_MITM_SUPPORTED
+                    , m_forward_service
+                    #endif
+                );
             }
     };
 
 }
-
 
 #if defined(ATMOSPHERE_OS_HORIZON)
 namespace ams::sf::impl {
@@ -710,6 +765,9 @@ namespace ams::sf::impl {
             std::array<cmif::ServiceObjectHolder, NumOutObjects> m_out_object_holders;
             std::array<util::TypedStorage<SharedPointer<sf::IServiceObject>>, NumOutObjects> m_out_shared_pointers;
             std::array<cmif::DomainObjectId, NumOutObjects> m_out_object_ids;
+            #if AMS_SF_MITM_SUPPORTED
+            std::array<std::shared_ptr<::Service>, NumOutObjects> m_out_forward_services;
+            #endif
         public:
             constexpr InOutObjectHolder() : m_in_object_holders(), m_out_object_holders() {
                 #define _SF_IN_OUT_HOLDER_INITIALIZE_OBJECT_ID(n) if constexpr (NumOutObjects > n) { m_out_object_ids[n] = cmif::InvalidDomainObjectId; }
@@ -762,11 +820,25 @@ namespace ams::sf::impl {
             template<size_t Index, typename Interface>
             Out<SharedPointer<Interface>> GetOutObject() {
                 auto sp = std::construct_at(GetOutObjectSharedPointer<Index, Interface>());
-                return Out<SharedPointer<Interface>>(sp, std::addressof(m_out_object_ids[Index]));
+                return Out<SharedPointer<Interface>>(sp, std::addressof(m_out_object_ids[Index])
+                    #if AMS_SF_MITM_SUPPORTED
+                    , std::addressof(m_out_forward_services[Index])
+                    #endif
+                );
             }
 
             template<size_t Index, typename Interface>
             void SetOutObject() {
+                #if AMS_SF_MITM_SUPPORTED
+                if constexpr (sf::IsMitmServiceObject<Interface>) {
+                    if (m_out_forward_services[Index] != nullptr) {
+                        m_out_object_holders[Index] = cmif::ServiceObjectHolder(std::move(*GetOutObjectSharedPointer<Index, Interface>()), std::move(m_out_forward_services[Index]));
+                        return;
+                    }
+                } else {
+                    AMS_ABORT_UNLESS(m_out_forward_services[Index] == nullptr);
+                }
+                #endif
                 m_out_object_holders[Index] = cmif::ServiceObjectHolder(std::move(*GetOutObjectSharedPointer<Index, Interface>()));
             }
 
@@ -872,7 +944,15 @@ namespace ams::sf::impl {
                 }
                 os::NativeHandle server_handle, client_handle;
                 R_ABORT_UNLESS(sf::hipc::CreateSession(std::addressof(server_handle), std::addressof(client_handle)));
-                R_ABORT_UNLESS(manager->RegisterSession(server_handle, std::move(object)));
+                #if AMS_SF_MITM_SUPPORTED
+                if (object.HasForwardService()) {
+                    auto forward_service = object.TakeForwardService();
+                    R_ABORT_UNLESS(manager->RegisterMitmSession(server_handle, std::move(object), std::move(forward_service)));
+                } else
+                #endif
+                {
+                    R_ABORT_UNLESS(manager->RegisterSession(server_handle, std::move(object)));
+                }
                 response.move_handles[Index] = client_handle;
             }
 
@@ -1276,7 +1356,6 @@ namespace ams::sf::impl {
         AMS_ABORT("HIPC serialization not currently supported on Windows.");
     }
 
-
 }
 #elif defined(ATMOSPHERE_OS_LINUX)
 namespace ams::sf::impl {
@@ -1288,7 +1367,6 @@ namespace ams::sf::impl {
         AMS_ABORT("HIPC serialization not currently supported on Linux.");
     }
 
-
 }
 #elif defined(ATMOSPHERE_OS_MACOS)
 namespace ams::sf::impl {
@@ -1299,7 +1377,6 @@ namespace ams::sf::impl {
         AMS_UNUSED(out_header_ptr, ctx, in_raw_data);
         AMS_ABORT("HIPC serialization not currently supported on macOS.");
     }
-
 
 }
 #else

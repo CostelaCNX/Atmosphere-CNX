@@ -17,6 +17,7 @@
 #include "../amsmitm_initialization.hpp"
 #include "../amsmitm_fs_utils.hpp"
 #include "fsmitm_layered_romfs_storage.hpp"
+#include "../usb_mitm/usb_launch_trace.hpp"
 
 namespace ams::mitm::fs {
 
@@ -170,9 +171,14 @@ namespace ams::mitm::fs {
 
         class LayeredRomfsStorage : public ams::fs::IStorage {
             private:
+                /* Each open publishes its own native domain object ID. Keep
+                 * that open alive even when the merged data comes from an
+                 * existing cached implementation. Otherwise the returned ID
+                 * can be closed/reused while the client still owns it. */
+                std::shared_ptr<ams::fs::IStorage> m_source_owner;
                 LayeredRomfsStorageImpl *m_impl;
             public:
-                LayeredRomfsStorage(LayeredRomfsStorageImpl *impl) : m_impl(impl) {
+                LayeredRomfsStorage(LayeredRomfsStorageImpl *impl, std::shared_ptr<ams::fs::IStorage> source_owner) : m_source_owner(std::move(source_owner)), m_impl(impl) {
                     OpenReference(m_impl);
                 }
 
@@ -261,6 +267,10 @@ namespace ams::mitm::fs {
     using namespace ams::fs;
 
     std::shared_ptr<ams::fs::IStorage> GetLayeredRomfsStorage(ncm::ProgramId program_id, ::FsStorage &data_storage, bool is_process_romfs) {
+        return GetLayeredRomfsStorage(program_id, std::make_shared<ReadOnlyStorageAdapter>(new RemoteStorage(data_storage)), is_process_romfs, nullptr);
+    }
+
+    std::shared_ptr<ams::fs::IStorage> GetLayeredRomfsStorage(ncm::ProgramId program_id, std::shared_ptr<ams::fs::IStorage> data_storage, bool is_process_romfs, std::shared_ptr<ams::fs::IStorage> usb_mods) {
         /*Prepare to find or create a new storage. */
         LayeredRomfsStorageImpl *impl = nullptr;
         {
@@ -268,7 +278,7 @@ namespace ams::mitm::fs {
 
             /* Find an existing storage. */
             if (auto it = g_storage_set.find_key(program_id.value); it != g_storage_set.end()) {
-                return std::make_shared<LayeredRomfsStorage>(it->GetImpl());
+                return std::make_shared<LayeredRomfsStorage>(it->GetImpl(), std::move(data_storage));
             }
 
             /* We don't have an existing storage. If we're creating process romfs, free any unreferenced process romfs. */
@@ -289,10 +299,12 @@ namespace ams::mitm::fs {
             /* Create a new storage. */
             {
                 ::FsFile data_file;
-                if (R_SUCCEEDED(OpenAtmosphereSdFile(std::addressof(data_file), program_id, "romfs.bin", OpenMode_Read))) {
-                    impl = new LayeredRomfsStorageImpl(std::make_unique<ReadOnlyStorageAdapter>(new RemoteStorage(data_storage)), std::make_unique<ReadOnlyStorageAdapter>(new FileStorage(new RemoteFile(data_file))), program_id);
+                if (usb_mods) {
+                    impl = new LayeredRomfsStorageImpl(data_storage, std::move(usb_mods), program_id, true);
+                } else if (R_SUCCEEDED(OpenAtmosphereSdFile(std::addressof(data_file), program_id, "romfs.bin", OpenMode_Read))) {
+                    impl = new LayeredRomfsStorageImpl(data_storage, std::make_shared<ReadOnlyStorageAdapter>(new FileStorage(new RemoteFile(data_file))), program_id);
                 } else {
-                    impl = new LayeredRomfsStorageImpl(std::make_unique<ReadOnlyStorageAdapter>(new RemoteStorage(data_storage)), nullptr, program_id);
+                    impl = new LayeredRomfsStorageImpl(data_storage, nullptr, program_id);
                 }
             }
 
@@ -305,7 +317,7 @@ namespace ams::mitm::fs {
         impl->BeginInitialize();
 
         /* Return a new shared storage for the impl. */
-        return std::make_shared<LayeredRomfsStorage>(impl);
+        return std::make_shared<LayeredRomfsStorage>(impl, std::move(data_storage));
     }
     
     std::shared_ptr<ams::fs::IStorageForBatchRead> GetLayeredRomfsStorageForBatchRead(ncm::ProgramId program_id, ::FsStorageForBatchRead &data_storage, bool is_process_romfs) {
@@ -371,7 +383,7 @@ namespace ams::mitm::fs {
         }
     }
 
-    LayeredRomfsStorageImpl::LayeredRomfsStorageImpl(std::unique_ptr<IStorage> s_r, std::unique_ptr<IStorage> f_r, ncm::ProgramId pr_id) : m_storage_romfs(std::move(s_r)), m_file_romfs(std::move(f_r)), m_initialize_event(os::EventClearMode_ManualClear), m_program_id(std::move(pr_id)), m_is_initialized(false), m_started_initialize(false) {
+    LayeredRomfsStorageImpl::LayeredRomfsStorageImpl(std::shared_ptr<IStorage> s_r, std::shared_ptr<IStorage> f_r, ncm::ProgramId pr_id, bool usb_mods) : m_storage_romfs(std::move(s_r)), m_file_romfs(std::move(f_r)), m_usb_mods(usb_mods), m_initialize_event(os::EventClearMode_ManualClear), m_program_id(std::move(pr_id)), m_is_initialized(false), m_started_initialize(false) {
         /* ... */
     }
 
@@ -391,7 +403,7 @@ namespace ams::mitm::fs {
         /* Build new virtual romfs. */
         romfs::Builder builder(m_program_id);
 
-        if (mitm::IsInitialized()) {
+        if (mitm::IsInitialized() && !m_usb_mods) {
             builder.AddSdFiles();
         }
         if (m_file_romfs) {
@@ -407,9 +419,44 @@ namespace ams::mitm::fs {
         m_initialize_event.Signal();
     }
 
+    Result LayeredRomfsStorageImpl::ReportReadFailure(Result result, const char *source, const char *path, s64 offset, size_t size) {
+        if (R_FAILED(result) && !m_read_failure_traced.exchange(true, std::memory_order_relaxed)) {
+            /* Memory-only trace; the existing independent publisher handles SD
+             * logging. Never do extra filesystem I/O from a failing read. */
+            char detail[128]{};
+            util::SNPrintf(detail, sizeof(detail), "M3 layered-read failed source=%s off=%lld bytes=%zu", source,
+                static_cast<long long>(offset), size);
+            usb_storage::RecordLaunchBoundaryTrace(usb_storage::FsUsbStorageFirstRead, m_program_id, 0, result, detail);
+            if (path != nullptr) {
+                /* The trace ABI has a 128-byte path. Split bounded, sanitized
+                 * fragments so long mod paths remain identifiable. Each record
+                 * carries this title ID and result, including when interleaved. */
+                size_t length = 0;
+                while (length < ams::fs::EntryNameLengthMax && path[length] != '\0') {
+                    ++length;
+                }
+                constexpr size_t FragmentSize = 96;
+                for (size_t at = 0; at < length; at += FragmentSize) {
+                    char fragment[FragmentSize + 1]{};
+                    const size_t count = std::min(FragmentSize, length - at);
+                    for (size_t i = 0; i < count; ++i) {
+                        const u8 c = static_cast<u8>(path[at + i]);
+                        fragment[i] = c < 0x20 || c == 0x7f ? '?' : static_cast<char>(c);
+                    }
+                    util::SNPrintf(detail, sizeof(detail), "M3 path[%zu]=%s", at, fragment);
+                    usb_storage::RecordLaunchBoundaryTrace(usb_storage::FsUsbStorageFirstRead, m_program_id, 0, result, detail);
+                }
+            }
+        }
+        /* Preserve the actual failure. Do not fabricate good data, silently
+         * switch to the base image mid-read, or clear system corruption flags. */
+        R_RETURN(result);
+    }
+
     Result LayeredRomfsStorageImpl::Read(s64 offset, void *buffer, size_t size) {
         /* Check if we can succeed immediately. */
         R_SUCCEED_IF(size == 0);
+        R_UNLESS(buffer != nullptr, fs::ResultNullptrArgument());
 
         /* Ensure we're initialized. */
         if (!m_is_initialized) {
@@ -441,20 +488,22 @@ namespace ams::mitm::fs {
                 const size_t cur_read_size = std::min(size - read_so_far, static_cast<size_t>(cur_source.size - offset_within_source));
                 switch (cur_source.source_type) {
                     case romfs::DataSourceType::Storage:
-                        R_ABORT_UNLESS(m_storage_romfs->Read(cur_source.storage_source_info.offset + offset_within_source, cur_dst, cur_read_size));
+                        R_TRY(this->ReportReadFailure(m_storage_romfs->Read(cur_source.storage_source_info.offset + offset_within_source, cur_dst, cur_read_size), "base", nullptr, offset, cur_read_size));
                         break;
                     case romfs::DataSourceType::File:
-                        R_ABORT_UNLESS(m_file_romfs->Read(cur_source.file_source_info.offset + offset_within_source, cur_dst, cur_read_size));
+                        R_TRY(this->ReportReadFailure(m_file_romfs->Read(cur_source.file_source_info.offset + offset_within_source, cur_dst, cur_read_size), m_usb_mods ? "usb-mod" : "romfs.bin", nullptr, offset, cur_read_size));
                         break;
                     case romfs::DataSourceType::LooseSdFile:
                         {
                             FsFile file;
-                            R_ABORT_UNLESS(mitm::fs::OpenAtmosphereSdRomfsFile(std::addressof(file), m_program_id, cur_source.loose_source_info.path, OpenMode_Read));
+                            R_TRY(this->ReportReadFailure(mitm::fs::OpenAtmosphereSdRomfsFile(std::addressof(file), m_program_id, cur_source.loose_source_info.path, OpenMode_Read), "sd-open", cur_source.loose_source_info.path, offset, cur_read_size));
                             ON_SCOPE_EXIT { fsFileClose(std::addressof(file)); };
 
                             u64 out_read = 0;
-                            R_ABORT_UNLESS(fsFileRead(std::addressof(file), offset_within_source, cur_dst, cur_read_size, FsReadOption_None, std::addressof(out_read)));
-                            AMS_ABORT_UNLESS(out_read == cur_read_size);
+                            R_TRY(this->ReportReadFailure(fsFileRead(std::addressof(file), offset_within_source, cur_dst, cur_read_size, FsReadOption_None, std::addressof(out_read)), "sd-read", cur_source.loose_source_info.path, offset, cur_read_size));
+                            if (out_read != cur_read_size) {
+                                R_RETURN(this->ReportReadFailure(fs::ResultUnexpectedInLocalFileSystemA(), "sd-short-read", cur_source.loose_source_info.path, offset, cur_read_size));
+                            }
                         }
                         break;
                     case romfs::DataSourceType::Memory:
@@ -463,8 +512,10 @@ namespace ams::mitm::fs {
                     case romfs::DataSourceType::Metadata:
                         {
                             size_t out_read = 0;
-                            R_ABORT_UNLESS(cur_source.metadata_source_info.file->Read(std::addressof(out_read), offset_within_source, cur_dst, cur_read_size));
-                            AMS_ABORT_UNLESS(out_read == cur_read_size);
+                            R_TRY(this->ReportReadFailure(cur_source.metadata_source_info.file->Read(std::addressof(out_read), offset_within_source, cur_dst, cur_read_size), "metadata-read", "romfs_metadata.bin", offset, cur_read_size));
+                            if (out_read != cur_read_size) {
+                                R_RETURN(this->ReportReadFailure(fs::ResultUnexpectedInLocalFileSystemA(), "metadata-short-read", "romfs_metadata.bin", offset, cur_read_size));
+                            }
                         }
                         break;
                     AMS_UNREACHABLE_DEFAULT_CASE();
@@ -475,7 +526,7 @@ namespace ams::mitm::fs {
             } else {
                 /* Explicitly handle padding. */
                 const auto &next_source = *(++it);
-                const size_t padding_size = static_cast<size_t>(next_source.virtual_offset - offset);
+                const size_t padding_size = std::min(size - read_so_far, static_cast<size_t>(next_source.virtual_offset - offset));
 
                 std::memset(cur_dst, 0, padding_size);
                 read_so_far += padding_size;

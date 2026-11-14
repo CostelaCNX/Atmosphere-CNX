@@ -14,6 +14,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/ncm/ncm_usb_title_map.hpp>
 #include "ncm_extended_data_mapper.hpp"
 
 namespace ams::ncm {
@@ -78,7 +79,11 @@ namespace ams::ncm {
     }
 
     Result InstallTaskBase::Prepare() {
-        R_TRY(this->SetLastResultOnFailure(this->PrepareImpl()));
+        const bool use_usb = ShouldUseUsbContentForInstall(this->GetInstallStorage());
+        SetUsbContentInstallRouteActive(use_usb);
+        const Result result = this->SetLastResultOnFailure(this->PrepareImpl());
+        SetUsbContentInstallRouteActive(false);
+        R_TRY(result);
         R_SUCCEED();
     }
 
@@ -324,7 +329,11 @@ namespace ams::ncm {
     }
 
     Result InstallTaskBase::Execute() {
-        R_TRY(this->SetLastResultOnFailure(this->ExecuteImpl()));
+        const bool use_usb = ShouldUseUsbContentForInstall(this->GetInstallStorage());
+        SetUsbContentInstallRouteActive(use_usb);
+        const Result result = this->SetLastResultOnFailure(this->ExecuteImpl());
+        SetUsbContentInstallRouteActive(false);
+        R_TRY(result);
         R_SUCCEED();
     }
 
@@ -374,8 +383,16 @@ namespace ams::ncm {
     }
 
     Result InstallTaskBase::PrepareAndExecute() {
-        R_TRY(this->SetLastResultOnFailure(this->PrepareImpl()));
-        R_TRY(this->SetLastResultOnFailure(this->ExecuteImpl()));
+        const bool use_usb = ShouldUseUsbContentForInstall(this->GetInstallStorage());
+        SetUsbContentInstallRouteActive(use_usb);
+        const Result prepare_result = this->SetLastResultOnFailure(this->PrepareImpl());
+        if (R_FAILED(prepare_result)) {
+            SetUsbContentInstallRouteActive(false);
+            R_TRY(prepare_result);
+        }
+        const Result execute_result = this->SetLastResultOnFailure(this->ExecuteImpl());
+        SetUsbContentInstallRouteActive(false);
+        R_TRY(execute_result);
         R_SUCCEED();
     }
 
@@ -424,6 +441,13 @@ namespace ams::ncm {
         /* List of storages to commit. */
         StorageList commit_list;
 
+        /* These are persisted only after Horizon's normal metadata commit
+         * succeeds.  The map is a launch hint; it never replaces the title
+         * record, ticket database, or content-meta database. */
+        constexpr s32 MaxUsbTitleMappingsPerCommit = 32;
+        ProgramId usb_title_mappings[MaxUsbTitleMappingsPerCommit]{};
+        s32 usb_title_mapping_count = 0;
+
         /* Iterate over content meta. */
         for (s32 i = 0; i < count; i++) {
             /* Obtain the content meta. */
@@ -435,6 +459,15 @@ namespace ams::ncm {
             const auto cur_key        = reader.GetKey();
             const auto storage_id     = reader.GetStorageId();
             const size_t convert_size = reader.CalculateConvertSize();
+
+            /* Once AMS has armed the USB route, select Host directly for
+             * user-storage installs.  OpenContentStorage(Host) performs the
+             * authoritative ready/writable check at the actual operation
+             * boundary.  Keeping the readiness poll out of this boolean is
+             * important: a transient worker-state sample must never turn a
+             * requested USB install into a silent SD install. */
+            const bool usb_content_selected = storage_id == StorageId::Host
+                || ncm::IsUsbContentInstallRouteActive();
 
             /* Skip content meta not contained in input keys. */
             if (keys != nullptr && !Contains(keys, num_keys, cur_key, storage_id)) {
@@ -461,7 +494,8 @@ namespace ams::ncm {
 
                 /* Open the content storage for this meta. */
                 ContentStorage content_storage;
-                R_TRY(OpenContentStorage(std::addressof(content_storage), storage_id));
+                const StorageId content_storage_id = usb_content_selected ? StorageId::Host : storage_id;
+                R_TRY(OpenContentStorage(std::addressof(content_storage), content_storage_id));
 
                 /* Open the content meta database for this meta. */
                 ContentMetaDatabase meta_db;
@@ -477,8 +511,14 @@ namespace ams::ncm {
                     }
                 }
 
-                /* Store the content meta. */
+                /* Store the content meta, then immediately verify that the
+                 * active database accepted the exact key. This catches the
+                 * case where bytes were registered but the title record was
+                 * silently written to a different backend. */
                 R_TRY(meta_db.Set(reader.GetKey(), content_meta_buffer.get(), convert_size));
+                bool metadata_present = false;
+                R_TRY(meta_db.Has(std::addressof(metadata_present), reader.GetKey()));
+                R_UNLESS(metadata_present, ncm::ResultContentMetaNotFound());
 
                 /* Mark as committed. */
                 writer.GetWritableHeader()->committed = true;
@@ -489,6 +529,12 @@ namespace ams::ncm {
 
             /* Try to update our data. */
             R_TRY(m_data->Update(content_meta, i));
+
+            if (usb_content_selected
+                && cur_key.type == ContentMetaType::Application
+                && usb_title_mapping_count < MaxUsbTitleMappingsPerCommit) {
+                usb_title_mappings[usb_title_mapping_count++] = ProgramId{cur_key.id};
+            }
         }
 
         /* Commit all applicable content meta databases. */
@@ -496,6 +542,13 @@ namespace ams::ncm {
             ContentMetaDatabase meta_db;
             R_TRY(OpenContentMetaDatabase(std::addressof(meta_db), commit_list[i]));
             R_TRY(meta_db.Commit());
+        }
+
+        /* Make the association durable only after the stock metadata commit
+         * has completed.  Failure to write this optional SD-side map must not
+         * turn a successful install into a failed install. */
+        for (s32 i = 0; i < usb_title_mapping_count; i++) {
+            AMS_UNUSED(RegisterUsbTitle(usb_title_mappings[i]));
         }
 
         /* Change progress state to committed if keys are nullptr. */
@@ -509,7 +562,11 @@ namespace ams::ncm {
     Result InstallTaskBase::Commit(const StorageContentMetaKey *keys, s32 num_keys) {
         ON_RESULT_FAILURE { this->SetProgressState(InstallProgressState::Fatal); };
 
-        R_RETURN(this->SetLastResultOnFailure(this->CommitImpl(keys, num_keys)));
+        const bool use_usb = ShouldUseUsbContentForInstall(this->GetInstallStorage());
+        SetUsbContentInstallRouteActive(use_usb);
+        const Result result = this->SetLastResultOnFailure(this->CommitImpl(keys, num_keys));
+        SetUsbContentInstallRouteActive(false);
+        R_RETURN(result);
     }
 
     Result InstallTaskBase::IncludesExFatDriver(bool *out) {
@@ -613,9 +670,10 @@ namespace ams::ncm {
             return false;
         }
 
-        /* TODO: Support detecting if a title requires rights. */
-        /* TODO: How should es be handled without undesired effects? */
-        return false;
+        /* A non-zero rights id means the content is encrypted with a title
+         * key.  The package install task must give ES the package ticket
+         * before the content can be opened by FS or by the loader. */
+        return true;
     }
 
     Result InstallTaskBase::PreparePlaceHolder() {
@@ -648,17 +706,48 @@ namespace ams::ncm {
                     R_TRY(ncm::SelectDownloadableStorage(std::addressof(storage_id), install_storage, reader.CalculateContentRequiredSize()));
                 }
 
+                /* Host is an internal implementation detail of the USB
+                 * backend.  Keep the content-meta database itself on the
+                 * requested stock user storage so the title record remains
+                 * visible to Horizon and tickets remain on the normal path.
+                 * The individual ContentInfo entries are separate, however:
+                 * they must identify the storage that actually owns the NCA
+                 * bytes.  Leaving them tagged as SdCard makes NCM/loader look
+                 * for the executable on SD after a successful USB write. */
+                StorageId metadata_storage_id = storage_id;
+                if (metadata_storage_id == StorageId::Host) {
+                    const StorageId install_storage = this->GetInstallStorage();
+                    metadata_storage_id = (install_storage == StorageId::BuiltInUser || install_storage == StorageId::SdCard)
+                        ? install_storage
+                        : StorageId::SdCard;
+                }
+
+                /* Match PreparePlaceHolder: an armed route is authoritative
+                 * for this install.  Host opening below performs the bounded
+                 * USB readiness check and fails clearly if the medium went
+                 * away, rather than falling back to SD after preparation. */
+                const bool usb_content_selected = storage_id == StorageId::Host
+                    || ncm::IsUsbContentInstallRouteActive();
+                const StorageId content_record_storage_id = usb_content_selected
+                    ? StorageId::Host
+                    : metadata_storage_id;
+
                 /* Open the relevant content storage. */
                 ContentStorage content_storage;
-                R_TRY(ncm::OpenContentStorage(std::addressof(content_storage), storage_id));
+                const StorageId content_storage_id = usb_content_selected ? StorageId::Host : storage_id;
+                R_TRY(ncm::OpenContentStorage(std::addressof(content_storage), content_storage_id));
 
                 /* Update the storage id in the header. */
                 auto writer = content_meta.GetWriter();
-                writer.SetStorageId(storage_id);
+                writer.SetStorageId(metadata_storage_id);
 
                 for (size_t j = 0; j < writer.GetContentCount(); j++) {
                     R_UNLESS(!this->IsCancelRequested(), ncm::ResultCreatePlaceHolderCancelled());
                     auto *content_info = writer.GetWritableContentInfo(j);
+
+                    /* The header/database remains on the stock user storage,
+                     * while each content entry points at the real byte owner. */
+                    content_info->storage_id = content_record_storage_id;
 
                     /* Check if we have the content already exists. */
                     bool has_content;
@@ -690,9 +779,6 @@ namespace ams::ncm {
                         /* Update the install state. */
                         content_info->install_state = InstallState::Prepared;
                     }
-
-                    /* Update the storage id for the content info. */
-                    content_info->storage_id = storage_id;
 
                     /* Add the size of this content info to the total size. */
                     total_size += content_info->GetSize();

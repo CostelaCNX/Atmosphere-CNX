@@ -23,19 +23,24 @@ namespace ams::mitm::fs {
     class LayeredRomfsStorageImpl {
         private:
             romfs::Builder::SourceInfoVector m_source_infos;
-            std::unique_ptr<ams::fs::IStorage> m_storage_romfs;
-            std::unique_ptr<ams::fs::IStorage> m_file_romfs;
+            std::shared_ptr<ams::fs::IStorage> m_storage_romfs;
+            std::shared_ptr<ams::fs::IStorage> m_file_romfs;
+            bool m_usb_mods;
             os::Event m_initialize_event;
             ncm::ProgramId m_program_id;
             bool m_is_initialized;
             bool m_started_initialize;
+            /* Diagnostics only: never quarantine a title or persist a failed
+             * launch. A repaired file/reinstalled game can be read again. */
+            std::atomic_bool m_read_failure_traced{false};
+            Result ReportReadFailure(Result result, const char *source, const char *path, s64 offset, size_t size);
         protected:
             inline s64 GetSize() const {
                 const auto &back = m_source_infos.back();
                 return back.virtual_offset + back.size;
             }
         public:
-            LayeredRomfsStorageImpl(std::unique_ptr<ams::fs::IStorage> s_r, std::unique_ptr<ams::fs::IStorage> f_r, ncm::ProgramId pr_id);
+            LayeredRomfsStorageImpl(std::shared_ptr<ams::fs::IStorage> s_r, std::shared_ptr<ams::fs::IStorage> f_r, ncm::ProgramId pr_id, bool usb_mods=false);
             ~LayeredRomfsStorageImpl();
 
             void BeginInitialize();
@@ -51,6 +56,8 @@ namespace ams::mitm::fs {
 
     std::shared_ptr<ams::fs::IStorage> GetLayeredRomfsStorage(ncm::ProgramId program_id, ::FsStorage &data_storage, bool is_process_romfs);
     std::shared_ptr<ams::fs::IStorageForBatchRead> GetLayeredRomfsStorageForBatchRead(ncm::ProgramId program_id, ::FsStorageForBatchRead &data_storage, bool is_process_romfs);
+    std::shared_ptr<ams::fs::IStorage> GetLayeredRomfsStorage(ncm::ProgramId program_id, std::shared_ptr<ams::fs::IStorage> data_storage, bool is_process_romfs, std::shared_ptr<ams::fs::IStorage> usb_mods);
+
     void FinalizeLayeredRomfsStorage(ncm::ProgramId program_id);
 
 }

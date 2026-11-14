@@ -70,12 +70,20 @@ namespace ams::ncm {
             {
                 PackagePath ticket_path;
                 this->CreateTicketPath(std::addressof(ticket_path), rights_id);
-                R_TRY(fs::OpenFile(std::addressof(ticket_file), ticket_path, fs::OpenMode_Read));
+                R_TRY_CATCH(fs::OpenFile(std::addressof(ticket_file), ticket_path, fs::OpenMode_Read)) {
+                    /* Packages without a ticket are valid for content that
+                     * already has a ticket installed.  Preserve NCM's
+                     * existing ignorable-ticket behavior in that case. */
+                    R_CATCH(fs::ResultPathNotFound) {
+                        R_THROW(ncm::ResultIgnorableInstallTicketFailure());
+                    }
+                } R_END_TRY_CATCH;
             }
             ON_SCOPE_EXIT { fs::CloseFile(ticket_file); };
 
             R_TRY(fs::GetFileSize(std::addressof(ticket_size), ticket_file));
 
+            R_UNLESS(ticket_size > 0, ncm::ResultIgnorableInstallTicketFailure());
             ticket.reset(new (std::nothrow) char[static_cast<size_t>(ticket_size)]);
             R_UNLESS(ticket != nullptr, ncm::ResultAllocationFailed());
             R_TRY(fs::ReadFile(ticket_file, 0, ticket.get(), static_cast<size_t>(ticket_size)));
@@ -90,19 +98,49 @@ namespace ams::ncm {
             {
                 PackagePath cert_path;
                 this->CreateCertificatePath(std::addressof(cert_path), rights_id);
-                R_TRY(fs::OpenFile(std::addressof(cert_file), cert_path, fs::OpenMode_Read));
+                R_TRY_CATCH(fs::OpenFile(std::addressof(cert_file), cert_path, fs::OpenMode_Read)) {
+                    R_CATCH(fs::ResultPathNotFound) {
+                        R_THROW(ncm::ResultIgnorableInstallTicketFailure());
+                    }
+                } R_END_TRY_CATCH;
             }
             ON_SCOPE_EXIT { fs::CloseFile(cert_file); };
 
             R_TRY(fs::GetFileSize(std::addressof(cert_size), cert_file));
 
+            R_UNLESS(cert_size > 0, ncm::ResultIgnorableInstallTicketFailure());
             cert.reset(new (std::nothrow) char[static_cast<size_t>(cert_size)]);
             R_UNLESS(cert != nullptr, ncm::ResultAllocationFailed());
             R_TRY(fs::ReadFile(cert_file, 0, cert.get(), static_cast<size_t>(cert_size)));
         }
 
-        /* TODO: es::ImportTicket() */
-        /* TODO: How should es be handled without undesired effects? */
+        /* Import the ticket into Horizon's ES database.  This is the same ES
+         * operation used by user-space installers, but is performed here at
+         * the NCM commit boundary so content routed to Host gets the same
+         * rights treatment as content written to SD or NAND. */
+        os::NativeHandle service_handle;
+        R_TRY(sm::GetServiceHandle(std::addressof(service_handle), sm::ServiceName::Encode("es")));
+
+        Service es_service{};
+        serviceCreate(std::addressof(es_service), service_handle);
+        ON_SCOPE_EXIT { serviceClose(std::addressof(es_service)); };
+
+        const Result ticket_import_result = serviceDispatch(std::addressof(es_service), 1,
+            .buffer_attrs = {
+                SfBufferAttr_HipcMapAlias | SfBufferAttr_In,
+                SfBufferAttr_HipcMapAlias | SfBufferAttr_In,
+            },
+            .buffers = {
+                { ticket.get(), static_cast<size_t>(ticket_size) },
+                { cert.get(), static_cast<size_t>(cert_size) },
+            }
+        );
+        /* Keep the result visible even when the installer was launched with
+         * the USB route disabled. Ticket import is an ES operation and the
+         * counters are diagnostic; gating them on the route used to make a
+         * missing/failed ticket look identical to a package with no ticket. */
+        ncm::RecordUsbTicketImport(ticket_import_result);
+        R_RETURN(ticket_import_result);
 
         R_SUCCEED();
     }

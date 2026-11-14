@@ -205,6 +205,7 @@ namespace ams::ncm {
             u32 m_num_integrated_configs{0};
             u32 m_num_configs{0};
             RightsIdCache m_rights_id_cache{};
+            sf::SharedPointer<IContentStorage> m_native_sd_content_storage{};
             RegisteredHostContent m_registered_host_content{};
         public:
             ContentManagerImpl() = default;
@@ -242,6 +243,7 @@ namespace ams::ncm {
             Result BuildContentMetaDatabaseImpl(StorageId storage_id);
             Result ImportContentMetaDatabase(StorageId storage_id, bool from_signed_partition);
             Result ImportContentMetaDatabaseImpl(ContentMetaDatabaseRoot *root, const char *import_mount_name);
+            StorageId ResolveUserContentStorageId(StorageId storage_id);
         private:
             /* Helpers for unofficial functionality. */
             bool IsNeedRebuildSystemContentMetaDatabase();
@@ -252,6 +254,8 @@ namespace ams::ncm {
             Result VerifyContentStorage(StorageId storage_id);
             Result VerifyContentMetaDatabase(StorageId storage_id);
             Result OpenContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out, StorageId storage_id);
+            Result OpenNativeSdContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out);
+            Result OpenPinnedUsbContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out, u64 generation);
             Result OpenContentMetaDatabase(sf::Out<sf::SharedPointer<IContentMetaDatabase>> out, StorageId storage_id);
             Result CloseContentStorageForcibly(StorageId storage_id);
             Result CloseContentMetaDatabaseForcibly(StorageId storage_id);
@@ -263,6 +267,12 @@ namespace ams::ncm {
             Result InvalidateRightsIdCache();
             Result GetMemoryReport(sf::Out<MemoryReport> out);
             Result ActivateFsContentStorage(fs::ContentStorageId fs_content_storage_id);
+            Result GetUsbContentStatus(sf::Out<UsbContentStatus> out);
+            Result SetUsbContentRouteEnabled(bool enabled);
+            Result RefreshUsbContentStatus();
+            Result SetUsbContentNativePathEnabled(bool enabled);
+            Result SetUsbContentMetadataRouteEnabled(bool enabled);
+            Result EnsureUsbContentRegistered(u64 generation, ContentId content_id, s64 expected_size);
     };
     static_assert(IsIContentManager<ContentManagerImpl>);
 

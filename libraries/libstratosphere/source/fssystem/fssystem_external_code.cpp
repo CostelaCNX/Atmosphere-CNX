@@ -53,6 +53,19 @@ namespace ams::fssystem {
         return nullptr;
     }
 
+    Result RegisterExternalCodeFileSystem(ncm::ProgramId program_id, const ::FsFileSystem &file_system) {
+        /* Replace a stale source for the same title. A process creation owns
+         * at most one external code provider per ProgramId. */
+        g_ecs_map.Remove(program_id);
+        if (auto *hnd = g_hnd_map.Find(program_id); hnd != nullptr) {
+            os::CloseNativeHandle(*hnd);
+            g_hnd_map.Remove(program_id);
+        }
+
+        R_UNLESS(g_ecs_map.Emplace(program_id, file_system), fs::ResultAllocationMemoryFailedInCodeA());
+        R_SUCCEED();
+    }
+
     Result CreateExternalCode(os::NativeHandle *out, ncm::ProgramId program_id) {
         /* Create a handle pair. */
         os::NativeHandle server, client;

@@ -26,6 +26,20 @@ Result nsGetDocumentInterfaceFwd(Service* s, NsDocumentInterface* out) {
     );
 }
 
+Result nsGetApplicationManagerInterfaceFwd(Service* s, NsApplicationManagerInterface* out) {
+    return serviceDispatch(s, 7996,
+        .out_num_objects = 1,
+        .out_objects = &out->s,
+    );
+}
+
+Result nsGetReadOnlyApplicationControlDataInterfaceFwd(Service* s, NsReadOnlyApplicationControlDataInterface* out) {
+    return serviceDispatch(s, 7989,
+        .out_num_objects = 1,
+        .out_objects = &out->s,
+    );
+}
+
 static Result _nsGetApplicationContentPathOld(Service *s, void* out, size_t out_size, u64 app_id, NcmContentType content_type) {
     const struct {
         u8 content_type;
@@ -99,6 +113,23 @@ Result nsamGetRunningApplicationProgramIdFwd(Service* s, u64* out_program_id, u6
     return _nsGetRunningApplicationProgramId(s, out_program_id, app_id);
 }
 
+Result nsamGetApplicationViewFwd(Service* s, u32 command_id, void* out_views, size_t out_views_size, const void* application_ids, size_t application_ids_size) {
+    return serviceDispatch(s, command_id,
+        .buffer_attrs = {
+            SfBufferAttr_HipcMapAlias | SfBufferAttr_Out,
+            SfBufferAttr_HipcMapAlias | SfBufferAttr_In,
+        },
+        .buffers = {
+            { out_views, out_views_size },
+            { application_ids, application_ids_size },
+        },
+    );
+}
+
+Result nsamCheckApplicationLaunchVersionFwd(Service* s, u64 app_id) {
+    return serviceDispatchIn(s, 38, app_id);
+}
+
 /* Web forwarders */
 Result nswebGetApplicationContentPath(NsDocumentInterface* doc, void* out, size_t out_size, u8 *out_attr, u64 app_id, NcmContentType content_type) {
     if (hosversionAtLeast(16,0,0)) {
@@ -124,3 +155,10 @@ void nsDocumentInterfaceClose(NsDocumentInterface* doc) {
     serviceClose(&doc->s);
 }
 
+void nsApplicationManagerInterfaceClose(NsApplicationManagerInterface* am) {
+    serviceClose(&am->s);
+}
+
+void nsReadOnlyApplicationControlDataInterfaceClose(NsReadOnlyApplicationControlDataInterface* control) {
+    serviceClose(&control->s);
+}

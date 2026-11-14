@@ -358,6 +358,7 @@ namespace ams::mitm::fs::romfs {
 
             ::FsDirectoryEntry m_dir_entry;
             DataSourceType m_cur_source_type;
+            s64 m_cur_source_offset_adjustment = 0;
         private:
             void VisitDirectory(FsFileSystem *fs, BuildDirectoryContext *parent);
             void VisitDirectory(BuildDirectoryContext *parent, u32 parent_offset, DirectoryTableReader &dir_table, FileTableReader &file_table);

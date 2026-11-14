@@ -14,8 +14,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include "../usb_mitm/usb_hang_capture.hpp"
 #include "fsmitm_module.hpp"
 #include "fs_mitm_service.hpp"
+#include "fsmitm_external_key.hpp"
+#include "../usb_mitm/usb_external_key_stats.hpp"
 
 namespace ams::mitm::fs {
 
@@ -52,8 +55,15 @@ namespace ams::mitm::fs {
             server->AcknowledgeMitmSession(std::addressof(fsrv), std::addressof(client_info));
 
             switch (port_index) {
-                case PortIndex_Mitm:
-                    R_RETURN(this->AcceptMitmImpl(server, sf::CreateSharedObjectEmplaced<IFsMitmInterface, FsMitmService>(decltype(fsrv)(fsrv), client_info), fsrv));
+                case PortIndex_Mitm: {
+                    if (client_info.program_id == ncm::SystemProgramId::Es) {
+                        auto key_service = sf::CreateSharedObjectEmplaced<IFsExternalKeyMitmInterface, FsExternalKeyMitmService>(decltype(fsrv)(fsrv), client_info);
+                        usb_storage::key_stats::es_sessions.fetch_add(1);
+                        R_RETURN(this->AcceptMitmImpl(server, std::move(key_service), fsrv));
+                    }
+                    auto service_object = sf::CreateSharedObjectEmplaced<IFsMitmInterface, FsMitmService>(decltype(fsrv)(fsrv), client_info);
+                    R_RETURN(this->AcceptMitmImpl(server, std::move(service_object), fsrv));
+                }
                 AMS_UNREACHABLE_DEFAULT_CASE();
             }
         }
@@ -67,6 +77,7 @@ namespace ams::mitm::fs {
         os::ThreadType g_extra_threads[NumExtraThreads];
 
         void LoopServerThread(void *) {
+            usb_storage::hang_capture::RegisterFsThread();
             /* Loop forever, servicing our services. */
             g_server_manager.LoopProcess();
         }

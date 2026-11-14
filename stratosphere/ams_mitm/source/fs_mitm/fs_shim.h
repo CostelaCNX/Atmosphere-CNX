@@ -12,6 +12,13 @@ extern "C" {
 #endif
 
 /* Missing fsp-srv commands. */
+Result fsOpenMultiCommitManagerFwd(Service* s, Service* out);
+Result fsOpenContentStorageFileSystemFwd(Service* s, FsFileSystem* out, FsContentStorageId id);
+Result fsOpenDataFileSystemByProgramIdFwd(Service* s, FsFileSystem* out, u64 program_id);
+Result fsOpenFileSystemWithIdAndAttributesFwd(Service* s, FsFileSystem* out, u64 id, FsFileSystemType fsType, const char* path, u8 attributes);
+Result fsGetProgramIdFwd(Service* s, u64* out, const char* path, FsContentAttributes attr);
+Result fsGetRightsIdAndKeyGenerationByPathFwd(Service* s, const char* path, FsContentAttributes attr, u8* out_key_generation, FsRightsId* out_rights_id);
+
 Result fsOpenFileSystemWithPatchFwd(Service* s, FsFileSystem* out, u64 id, FsFileSystemType fsType);
 Result fsOpenFileSystemWithIdObsoleteFwd(Service* s, FsFileSystem* out, const char* contentPath, u64 id, FsFileSystemType fsType);
 Result fsOpenFileSystemWithIdFwd(Service* s, FsFileSystem* out, const char* contentPath, FsContentAttributes attributes, u64 id, FsFileSystemType fsType);

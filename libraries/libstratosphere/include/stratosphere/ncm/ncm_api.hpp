@@ -48,6 +48,10 @@ namespace ams::ncm {
     Result InvalidateRightsIdCache();
 
     Result ActivateFsContentStorage(fs::ContentStorageId fs_content_storage_id);
+    Result SetUsbContentRouteEnabled(bool enabled);
+    Result RefreshUsbContentStatus();
+    Result SetUsbContentNativePathEnabled(bool enabled);
+    Result SetUsbContentMetadataRouteEnabled(bool enabled);
 
     /* Deprecated API. */
     Result CloseContentStorageForcibly(StorageId storage_id);

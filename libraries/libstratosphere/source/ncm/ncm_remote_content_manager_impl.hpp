@@ -54,6 +54,22 @@ namespace ams::ncm {
                 R_SUCCEED();
             }
 
+            Result OpenPinnedUsbContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out, u64 generation) {
+                NcmContentStorage cs{};
+                R_TRY(serviceDispatchIn(::ncmGetServiceSession(), 65031, generation,
+                    .out_num_objects = 1, .out_objects = std::addressof(cs.s)));
+                out.SetValue(ObjectFactory::CreateSharedEmplaced<IContentStorage, RemoteContentStorageImpl>(cs));
+                R_SUCCEED();
+            }
+
+            Result OpenNativeSdContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out) {
+                NcmContentStorage cs{};
+                R_TRY(serviceDispatch(::ncmGetServiceSession(), 65030,
+                    .out_num_objects = 1, .out_objects = std::addressof(cs.s)));
+                out.SetValue(ObjectFactory::CreateSharedEmplaced<IContentStorage, RemoteContentStorageImpl>(cs));
+                R_SUCCEED();
+            }
+
             Result OpenContentMetaDatabase(sf::Out<sf::SharedPointer<IContentMetaDatabase>> out, StorageId storage_id) {
                 NcmContentMetaDatabase db;
                 R_TRY(::ncmOpenContentMetaDatabase(std::addressof(db), static_cast<NcmStorageId>(storage_id)));
@@ -102,6 +118,34 @@ namespace ams::ncm {
 
             Result ActivateFsContentStorage(fs::ContentStorageId fs_content_storage_id) {
                 R_RETURN(::ncmActivateFsContentStorage(static_cast<::FsContentStorageId>(util::ToUnderlying(fs_content_storage_id))));
+            }
+
+            Result GetUsbContentStatus(sf::Out<UsbContentStatus> out) {
+                UsbContentStatus status{};
+                R_TRY(serviceDispatchOut(::ncmGetServiceSession(), 16, status));
+                out.SetValue(status);
+                R_SUCCEED();
+            }
+
+            Result SetUsbContentRouteEnabled(bool enabled) {
+                R_RETURN(serviceDispatchIn(::ncmGetServiceSession(), 17, enabled));
+            }
+
+            Result RefreshUsbContentStatus() {
+                R_RETURN(serviceDispatch(::ncmGetServiceSession(), 18));
+            }
+
+            Result SetUsbContentNativePathEnabled(bool enabled) {
+                R_RETURN(serviceDispatchIn(::ncmGetServiceSession(), 19, enabled));
+            }
+
+            Result SetUsbContentMetadataRouteEnabled(bool enabled) {
+                R_RETURN(serviceDispatchIn(::ncmGetServiceSession(), 20, enabled));
+            }
+
+            Result EnsureUsbContentRegistered(u64 generation, ContentId content_id, s64 expected_size) {
+                AMS_UNUSED(generation, content_id, expected_size);
+                R_RETURN(fs::ResultNotImplemented());
             }
     };
     static_assert(ncm::IsIContentManager<RemoteContentManagerImpl>);

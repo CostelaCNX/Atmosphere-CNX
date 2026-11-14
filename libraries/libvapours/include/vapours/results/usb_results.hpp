@@ -28,8 +28,18 @@ namespace ams::usb {
 
     R_DEFINE_ERROR_RESULT(OperationDenied,    201);
     R_DEFINE_ERROR_RESULT(MemAllocFailure,    202);
+    R_DEFINE_ERROR_RESULT(UnsupportedFilesystem, 203);
+    R_DEFINE_ERROR_RESULT(CorruptedFilesystem,  204);
+    R_DEFINE_ERROR_RESULT(FileNotFound,          205);
     R_DEFINE_ERROR_RESULT(ResourceBusy,       206);
     R_DEFINE_ERROR_RESULT(InternalStateError, 207);
+    R_DEFINE_ERROR_RESULT(MediaChanged,       208);
+    R_DEFINE_ERROR_RESULT(GameImageInvalid,   209);
+    R_DEFINE_ERROR_RESULT(GameImageUnsupported, 210);
+    R_DEFINE_ERROR_RESULT(GameImageTooManyEntries, 211);
+    R_DEFINE_ERROR_RESULT(HomebrewInvalid,     212);
+    R_DEFINE_ERROR_RESULT(HomebrewUnsupported, 213);
+    R_DEFINE_ERROR_RESULT(ScsiCommandFailed,    214);
 
     R_DEFINE_ERROR_RESULT(TransactionError,   401);
     R_DEFINE_ERROR_RESULT(Interrupted,        409);

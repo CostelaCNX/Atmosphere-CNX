@@ -7,6 +7,7 @@
     "process_category": 1,
     "use_secure_memory": true,
     "immortal": true,
+    "service_access": ["ams:usb"],
     "kernel_capabilities": [
         {
             "type": "handle_table_size",

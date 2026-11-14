@@ -16,31 +16,51 @@
 #pragma once
 #include <stratosphere.hpp>
 #include <stratosphere/fssrv/fssrv_interface_adapters.hpp>
+#include "fsmitm_external_key.hpp"
 
-#define AMS_FS_MITM_INTERFACE_INFO(C, H)                                                                                                                                                                                                                                                                                                                   \
-    AMS_SF_METHOD_INFO(C, H,   7, Result, OpenFileSystemWithPatch,                     (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, ncm::ProgramId program_id, u32 file_system_proxy_type),                                                     (out, program_id, file_system_proxy_type),                           hos::Version_2_0_0)  \
-    AMS_SF_METHOD_INFO(C, H,   8, Result, OpenFileSystemWithIdObsolete,                (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, ncm::ProgramId program_id, u32 file_system_proxy_type),                        (out, path, program_id, file_system_proxy_type),                     hos::Version_2_0_0)  \
-    AMS_SF_METHOD_INFO(C, H,  10, Result, OpenFileSystemWithId,                        (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, u8 content_attributes, ncm::ProgramId program_id, u32 file_system_proxy_type), (out, path, content_attributes, program_id, file_system_proxy_type), hos::Version_16_0_0) \
-    AMS_SF_METHOD_INFO(C, H,  18, Result, OpenSdCardFileSystem,                        (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out),                                                                                                            (out))                                                                                    \
-    AMS_SF_METHOD_INFO(C, H,  51, Result, OpenSaveDataFileSystem,                      (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, u8 space_id, const ams::fs::SaveDataAttribute &attribute),                                                  (out, space_id, attribute))                                                               \
-    AMS_SF_METHOD_INFO(C, H,  12, Result, OpenBisStorage,                              (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, u32 bis_partition_id),                                                                                         (out, bis_partition_id))                                                                  \
-    AMS_SF_METHOD_INFO(C, H, 200, Result, OpenDataStorageByCurrentProcess,             (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out),                                                                                                               (out))                                                                                    \
-    AMS_SF_METHOD_INFO(C, H, 201, Result, OpenDataStorageByProgramId,                  (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, ncm::ProgramId program_id),                                                                                    (out, program_id),                                                   hos::Version_3_0_0)  \
-    AMS_SF_METHOD_INFO(C, H, 202, Result, OpenDataStorageByDataId,                     (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, ncm::DataId data_id, u8 storage_id),                                                                           (out, data_id, storage_id))                                                               \
-    AMS_SF_METHOD_INFO(C, H, 205, Result, OpenDataStorageWithProgramIndex,             (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, u8 program_index),                                                                                             (out, program_index),                                                hos::Version_7_0_0)  \
+#define AMS_FS_MITM_INTERFACE_INFO(C, H) \
     AMS_SF_METHOD_INFO(C, H, 206, Result, OpenDataStorageByPath,                       (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, const fssrv::sf::Path &path, u8 content_attributes, u32 file_system_proxy_type),                               (out, path, content_attributes, file_system_proxy_type),             hos::Version_13_0_0) \
     AMS_SF_METHOD_INFO(C, H, 210, Result, OpenDataStorageByCurrentProcessForBatchRead, (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorageForBatchRead>> out),                                                                                                   (out),                                                               hos::Version_23_0_0) \
     AMS_SF_METHOD_INFO(C, H, 211, Result, OpenDataStorageByProgramIdForBatchRead,      (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorageForBatchRead>> out, ncm::ProgramId program_id),                                                                        (out, program_id),                                                   hos::Version_23_0_0) \
     AMS_SF_METHOD_INFO(C, H, 212, Result, OpenDataStorageWithProgramIndexForBatchRead, (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorageForBatchRead>> out, u8 program_index),                                                                                 (out, program_index),                                                hos::Version_23_0_0) \
     AMS_SF_METHOD_INFO(C, H, 213, Result, OpenDataStorageByPathForBatchRead,           (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorageForBatchRead>> out, const fssrv::sf::Path &path, u8 content_attributes, u32 file_system_proxy_type),                   (out, path, content_attributes, file_system_proxy_type),             hos::Version_23_0_0) \
-    AMS_SF_METHOD_INFO(C, H, 810, Result, RegisterProgramIndexMapInfo,                 (const sf::InBuffer &info_buffer, s32 info_count),                                                                                                                        (info_buffer, info_count),                                           hos::Version_7_0_0)
+    /* USB-compatible declarations below. */                                                                                                                                                                                                                                               \
+    AMS_SF_METHOD_INFO(C, H,   7, Result, OpenFileSystemWithPatch,         (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, ncm::ProgramId program_id, u32 _filesystem_type),                              (out, program_id, _filesystem_type),       hos::Version_2_0_0) \
+    AMS_SF_METHOD_INFO(C, H,   8, Result, OpenFileSystemWithIdObsolete,    (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, u64 program_id, u32 _filesystem_type),                                     (out, path, program_id, _filesystem_type),             hos::Version_2_0_0)  \
+    AMS_SF_METHOD_INFO(C, H,   9, Result, OpenDataFileSystemByProgramId,   (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, ncm::ProgramId program_id),                                                                       (out, program_id),                                     hos::Version_3_0_0)  \
+    AMS_SF_METHOD_INFO(C, H,  10, Result, OpenFileSystemWithId,            (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, ams::fs::ContentAttributes attributes, u64 program_id, u32 _filesystem_type), (out, path, attributes, program_id, _filesystem_type), hos::Version_16_0_0) \
+    AMS_SF_METHOD_INFO(C, H,  18, Result, OpenSdCardFileSystem,            (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out),                                                                               (out))                                                         \
+    AMS_SF_METHOD_INFO(C, H, 110, Result, OpenContentStorageFileSystem,    (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, u32 id),                                                                       (out, id))                                                     \
+    AMS_SF_METHOD_INFO(C, H,  51, Result, OpenSaveDataFileSystem,          (sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, u8 space_id, const ams::fs::SaveDataAttribute &attribute),                     (out, space_id, attribute))                                    \
+    AMS_SF_METHOD_INFO(C, H,  12, Result, OpenBisStorage,                  (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, u32 bis_partition_id),                                                            (out, bis_partition_id))                                       \
+    AMS_SF_METHOD_INFO(C, H, 200, Result, OpenDataStorageByCurrentProcess, (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out),                                                                                  (out))                                                         \
+    AMS_SF_METHOD_INFO(C, H, 201, Result, OpenDataStorageByProgramId,      (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, ncm::ProgramId program_id),                                                     (out, program_id),                                     hos::Version_3_0_0)  \
+    AMS_SF_METHOD_INFO(C, H, 202, Result, OpenDataStorageByDataId,         (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, ncm::DataId data_id, u8 storage_id),                                              (out, data_id, storage_id))                                    \
+    AMS_SF_METHOD_INFO(C, H, 205, Result, OpenDataStorageWithProgramIndex, (sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, u8 program_index),                                                                (out, program_index),                      hos::Version_7_0_0) \
+    AMS_SF_METHOD_INFO(C, H, 607, Result, RegisterExternalKey,            (const ams::mitm::fs::ExternalKeyRegistration &request),                                                                                    (request),                                hos::Version_2_0_0) \
+    AMS_SF_METHOD_INFO(C, H, 608, Result, UnregisterAllExternalKey,       (),                                                                                                                                          (),                                        hos::Version_2_0_0) \
+    AMS_SF_METHOD_INFO(C, H, 617, Result, UnregisterExternalKey,          (const ams::fs::RightsId &rights_id),                                                                                                          (rights_id),                               hos::Version_7_0_0) \
+    AMS_SF_METHOD_INFO(C, H, 810, Result, RegisterProgramIndexMapInfo,     (const sf::InBuffer &info_buffer, s32 info_count),                                                                                           (info_buffer, info_count),                 hos::Version_7_0_0) \
+    AMS_SF_METHOD_INFO(C, H, 610, Result, GetRightsIdAndKeyGenerationByPathObsolete, (sf::Out<ams::fs::RightsId> out, sf::Out<u8> out_generation, const fssrv::sf::Path &path), (out, out_generation, path), hos::Version_3_0_0, hos::Version_15_0_1) \
+    AMS_SF_METHOD_INFO(C, H, 610, Result, GetRightsIdAndKeyGenerationByPath, (sf::Out<ams::fs::RightsId> out, sf::Out<u8> out_generation, const fssrv::sf::Path &path, ams::fs::ContentAttributes attributes), (out, out_generation, path, attributes), hos::Version_16_0_0) \
+    AMS_SF_METHOD_INFO(C, H, 618, Result, GetProgramId, (sf::Out<ncm::ProgramId> out, const fssrv::sf::Path &path, ams::fs::ContentAttributes attributes), (out, path, attributes), hos::Version_17_0_0)
 
 
 AMS_SF_DEFINE_MITM_INTERFACE(ams::mitm::fs, IFsMitmInterface, AMS_FS_MITM_INTERFACE_INFO, 0x7DF34ED2)
 
 namespace ams::mitm::fs {
 
+    struct FsForwardTraceState {
+        os::SdkMutex lock;
+        ncm::ProgramId client_program_id;
+        ncm::ProgramId active_application_id;
+        u32 success_records;
+        u32 failure_records;
+    };
+
     class FsMitmService  : public sf::MitmServiceImplBase {
+        private:
+            FsForwardTraceState m_forward_trace{};
         public:
             using MitmServiceImplBase::MitmServiceImplBase;
         public:
@@ -52,6 +72,31 @@ namespace ams::mitm::fs {
 
                 /* We want to mitm ns, to intercept SD card requests and program index map info registration. */
                 if (program_id == ncm::SystemProgramId::Ns) {
+                    return true;
+                }
+
+                /* ES may connect before HOME. Its session uses a separate
+                 * key-only interface; all non-key commands forward untouched. */
+                if (program_id == ncm::SystemProgramId::Es) {
+                    return true;
+                }
+
+                /* NCM owns the long-lived fsp-srv session that opens logical
+                 * content storage. The R110 filesystem route must see command
+                 * 110 on that session so it can wrap only the SD content
+                 * filesystem; all other NCM commands continue to forward. */
+                if (program_id == ncm::SystemProgramId::Ncm) {
+                    return true;
+                }
+
+                /* AM performs the final pre-PGL content checks through its
+                 * own long-lived fsp-srv session. Without explicitly MITMing
+                 * that system program, its stock SD path lookup bypasses the
+                 * USB Control/Program fallbacks and returns PathNotFound
+                 * before Loader is ever invoked. All AM handlers remain
+                 * stock-first and USB fallback is still gated on a mounted,
+                 * armed drive. */
+                if (program_id == ncm::SystemProgramId::Am) {
                     return true;
                 }
 
@@ -82,12 +127,19 @@ namespace ams::mitm::fs {
 
                 return has_launched_qlaunch || ShouldMitmProgramId(client_info.program_id);
             }
+
+            FsForwardTraceState *GetForwardTraceState() {
+                m_forward_trace.client_program_id = m_client_info.program_id;
+                return std::addressof(m_forward_trace);
+            }
         public:
             /* Overridden commands. */
-            Result OpenFileSystemWithPatch(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, ncm::ProgramId program_id, u32 file_system_proxy_type);
-            Result OpenFileSystemWithIdObsolete(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, ncm::ProgramId program_id, u32 file_system_proxy_type);
-            Result OpenFileSystemWithId(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, u8 content_attributes, ncm::ProgramId program_id, u32 file_system_proxy_type);
+            Result OpenFileSystemWithPatch(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, ncm::ProgramId program_id, u32 _filesystem_type);
+            Result OpenFileSystemWithIdObsolete(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, u64 program_id, u32 _filesystem_type);
+            Result OpenDataFileSystemByProgramId(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, ncm::ProgramId program_id);
+            Result OpenFileSystemWithId(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, const fssrv::sf::Path &path, ams::fs::ContentAttributes attributes, u64 program_id, u32 _filesystem_type);
             Result OpenSdCardFileSystem(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out);
+            Result OpenContentStorageFileSystem(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, u32 id);
             Result OpenSaveDataFileSystem(sf::Out<sf::SharedPointer<ams::fssrv::sf::IFileSystem>> out, u8 space_id, const ams::fs::SaveDataAttribute &attribute);
             Result OpenBisStorage(sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out, u32 bis_partition_id);
             Result OpenDataStorageByCurrentProcess(sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorage>> out);
@@ -99,8 +151,19 @@ namespace ams::mitm::fs {
             Result OpenDataStorageByProgramIdForBatchRead(sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorageForBatchRead>> out, ncm::ProgramId program_id);
             Result OpenDataStorageWithProgramIndexForBatchRead(sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorageForBatchRead>> out, u8 program_index);
             Result OpenDataStorageByPathForBatchRead(sf::Out<sf::SharedPointer<ams::fssrv::sf::IStorageForBatchRead>> out, const fssrv::sf::Path &path, u8 content_attributes, u32 file_system_proxy_type);
+            Result RegisterExternalKey(const ExternalKeyRegistration &request);
+            Result UnregisterAllExternalKey();
+            Result UnregisterExternalKey(const ams::fs::RightsId &rights_id);
             Result RegisterProgramIndexMapInfo(const sf::InBuffer &info_buffer, s32 info_count);
+            Result GetRightsIdAndKeyGenerationByPathObsolete(sf::Out<ams::fs::RightsId> out, sf::Out<u8> out_generation, const fssrv::sf::Path &path);
+            Result GetRightsIdAndKeyGenerationByPath(sf::Out<ams::fs::RightsId> out, sf::Out<u8> out_generation, const fssrv::sf::Path &path, ams::fs::ContentAttributes attributes);
+            Result GetProgramId(sf::Out<ncm::ProgramId> out, const fssrv::sf::Path &path, ams::fs::ContentAttributes attributes);
     };
     static_assert(IsIFsMitmInterface<FsMitmService>);
+
+    void ObserveFsForwardRequest(const sf::cmif::PointerAndSize &request_message,
+        const sf::cmif::PointerAndSize &response_message, void *context);
+    void ObserveFsForwardTransport(const sf::cmif::PointerAndSize &request_message,
+        bool completed, Result transport_result, void *context);
 
 }

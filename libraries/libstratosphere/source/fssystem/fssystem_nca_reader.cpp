@@ -14,6 +14,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include <stratosphere/fssystem/fssystem_usb_signature_policy.hpp>
 
 namespace ams::fssystem {
 
@@ -45,7 +46,7 @@ namespace ams::fssystem {
         /* ... */
     }
 
-    Result NcaReader::Initialize(std::shared_ptr<fs::IStorage> base_storage, const NcaCryptoConfiguration &crypto_cfg, const NcaCompressionConfiguration &compression_cfg, IHash256GeneratorFactorySelector *hgf_selector) {
+    Result NcaReader::Initialize(std::shared_ptr<fs::IStorage> base_storage, const NcaCryptoConfiguration &crypto_cfg, const NcaCompressionConfiguration &compression_cfg, IHash256GeneratorFactorySelector *hgf_selector, bool allow_unsigned_usb_application) {
         /* Validate preconditions. */
         AMS_ASSERT(base_storage != nullptr);
         AMS_ASSERT(hgf_selector != nullptr);
@@ -125,7 +126,7 @@ namespace ams::fssystem {
             m_is_header_sign1_signature_valid = crypto_cfg.verify_sign1(sig, sig_size, msg, msg_size, m_header.header1_signature_key_generation);
 
             #if defined(ATMOSPHERE_BOARD_NINTENDO_NX)
-            R_UNLESS(m_is_header_sign1_signature_valid, fs::ResultNcaHeaderSignature1VerificationFailed());
+            R_UNLESS(AcceptNcaHeaderSignature(m_is_header_sign1_signature_valid, allow_unsigned_usb_application, m_header.program_id), fs::ResultNcaHeaderSignature1VerificationFailed());
             #else
             R_UNLESS(m_is_header_sign1_signature_valid || crypto_cfg.is_unsigned_header_available_for_host_tool, fs::ResultNcaHeaderSignature1VerificationFailed());
             #endif
@@ -400,6 +401,10 @@ namespace ams::fssystem {
         AMS_ABORT_UNLESS(m_is_header_sign1_signature_valid);
         #endif
 
+        return m_is_header_sign1_signature_valid;
+    }
+
+    bool NcaReader::GetHeaderSign1VerificationResultForDiagnostics() const {
         return m_is_header_sign1_signature_valid;
     }
 

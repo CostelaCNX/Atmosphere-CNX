@@ -748,7 +748,7 @@ namespace ams::mitm::fs {
                     return;
                 }
 
-                this->AddFile(parent, std::unique_ptr<BuildFileContext>(AllocateTyped<BuildFileContext>(AllocationType_BuildFileContext, cur_file->name, cur_file->name_size, cur_file->size, cur_file->offset, m_cur_source_type)));
+                this->AddFile(parent, std::unique_ptr<BuildFileContext>(AllocateTyped<BuildFileContext>(AllocationType_BuildFileContext, cur_file->name, cur_file->name_size, cur_file->size, cur_file->offset + m_cur_source_offset_adjustment, m_cur_source_type)));
 
                 cur_file_offset = cur_file->sibling;
             }
@@ -805,6 +805,9 @@ namespace ams::mitm::fs {
             FileTableReader file_table(storage, header.file_table_ofs, header.file_table_size);
 
             m_cur_source_type = source_type;
+            // The output uses 0x200, but an indexed USB input may place tables
+            // before its data. Normalize original offsets to the output bias.
+            m_cur_source_offset_adjustment = header.file_partition_ofs - FilePartitionOffset;
             this->VisitDirectory(m_root, 0x0, dir_table, file_table);
         }
 

@@ -20,6 +20,7 @@
 #include <stratosphere/fs/fs_filesystem.hpp>
 #include <stratosphere/kvdb/kvdb_auto_buffer.hpp>
 #include <stratosphere/kvdb/kvdb_archive.hpp>
+#include <stratosphere/kvdb/kvdb_file_archive.hpp>
 #include <stratosphere/kvdb/kvdb_bounded_string.hpp>
 
 namespace ams::kvdb {
@@ -131,20 +132,33 @@ namespace ams::kvdb {
                     Result Set(const Key &key, const void *value, size_t value_size) {
                         /* Find entry for key. */
                         Entry *it = this->lower_bound(key);
-                        if (it != this->end() && it->GetKey() == key) {
-                            /* Entry already exists. Free old value. */
+                        const bool exists = it != this->end() && it->GetKey() == key;
+                        R_UNLESS(exists || m_count < m_capacity, kvdb::ResultOutOfKeyResource());
+
+                        /* Equal-sized replacements need no allocation. Preserve the
+                         * allocation size expected by the memory resource and allow
+                         * the input to alias an existing value. */
+                        if (exists && it->GetValueSize() == value_size) {
+                            if (value_size != 0) {
+                                std::memmove(it->GetValuePointer(), value, value_size);
+                            }
+                            R_SUCCEED();
+                        }
+
+                        /* Allocate and copy before changing the index or freeing the
+                         * old value. An allocation failure must leave a valid store. */
+                        void *new_value = m_memory_resource->Allocate(value_size);
+                        R_UNLESS(new_value != nullptr, kvdb::ResultAllocationFailed());
+                        if (value_size != 0) {
+                            std::memcpy(new_value, value, value_size);
+                        }
+
+                        if (exists) {
                             m_memory_resource->Deallocate(it->GetValuePointer(), it->GetValueSize());
                         } else {
-                            /* We need to add a new entry. Check we have room, move future keys forward. */
-                            R_UNLESS(m_count < m_capacity, kvdb::ResultOutOfKeyResource());
                             std::memmove(it + 1, it, sizeof(*it) * (this->end() - it));
                             m_count++;
                         }
-
-                        /* Allocate new value. */
-                        void *new_value = m_memory_resource->Allocate(value_size);
-                        R_UNLESS(new_value != nullptr, kvdb::ResultAllocationFailed());
-                        std::memcpy(new_value, value, value_size);
 
                         /* Save the new Entry in the map. */
                         *it = Entry(key, new_value, value_size);
@@ -375,6 +389,59 @@ namespace ams::kvdb {
                 R_RETURN(this->Commit(buffer, destructive));
             }
 
+            /* NCM uses the streaming variants so loading/committing its database
+             * does not require another complete archive on its small general heap.
+             * Other users retain the original buffered Load/Save path. */
+            Result LoadStreaming() {
+                m_index.ResetEntries();
+                ON_RESULT_FAILURE { m_index.ResetEntries(); };
+
+                fs::FileHandle file;
+                R_TRY_CATCH(fs::OpenFile(std::addressof(file), m_path, fs::OpenMode_Read)) {
+                    R_CONVERT(fs::ResultPathNotFound, ResultSuccess());
+                } R_END_TRY_CATCH;
+                ON_SCOPE_EXIT { fs::CloseFile(file); };
+
+                s64 archive_size;
+                R_TRY(fs::GetFileSize(std::addressof(archive_size), file));
+                R_UNLESS(archive_size >= 0, kvdb::ResultInvalidKeyValue());
+                FileArchiveReader reader(file, archive_size);
+                size_t entry_count;
+                R_TRY(reader.ReadEntryCount(std::addressof(entry_count)));
+                R_UNLESS(entry_count <= m_index.GetCapacity(), kvdb::ResultOutOfKeyResource());
+
+                for (size_t i = 0; i < entry_count; ++i) {
+                    size_t key_size, value_size;
+                    R_TRY(reader.ReadEntrySize(std::addressof(key_size), std::addressof(value_size)));
+                    R_UNLESS(key_size == sizeof(Key), kvdb::ResultInvalidKeyValue());
+                    R_UNLESS(reader.CanRead(key_size, value_size), kvdb::ResultInvalidKeyValue());
+
+                    Key key;
+                    R_TRY(reader.Read(std::addressof(key), sizeof(key)));
+                    R_UNLESS(i == 0 || (m_index.end() - 1)->GetKey() < key, kvdb::ResultInvalidKeyValue());
+                    void *new_value = m_memory_resource->Allocate(value_size);
+                    R_UNLESS(new_value != nullptr, kvdb::ResultAllocationFailed());
+                    ON_RESULT_FAILURE { m_memory_resource->Deallocate(new_value, value_size); };
+                    R_TRY(reader.Read(new_value, value_size));
+                    R_TRY(m_index.AddUnsafe(key, new_value, value_size));
+                }
+                /* As in the buffered reader, tolerate trailing archive padding. */
+                R_SUCCEED();
+            }
+
+            Result SaveStreaming(bool destructive = false) {
+                if (destructive) {
+                    R_RETURN(this->SaveStreamingArchiveToFile(m_path.Get()));
+                }
+
+                /* Keep the existing save-data transaction and archive format. The
+                 * old archive is untouched until all temporary bytes are flushed. */
+                R_TRY(this->SaveStreamingArchiveToFile(m_temp_path.Get()));
+                R_DISCARD(fs::DeleteFile(m_path.Get()));
+                R_TRY(fs::RenameFile(m_temp_path.Get(), m_path.Get()));
+                R_SUCCEED();
+            }
+
             Result Set(const Key &key, const void *value, size_t value_size) {
                 R_RETURN(m_index.Set(key, value, value_size));
             }
@@ -487,6 +554,33 @@ namespace ams::kvdb {
                 return m_index.find(key);
             }
         private:
+            Result SaveStreamingArchiveToFile(const char *path) {
+                /* Validate sizes before touching the archive; wire lengths are u32. */
+                R_UNLESS(this->GetCount() <= UINT32_MAX && sizeof(Key) <= UINT32_MAX, kvdb::ResultInvalidKeyValue());
+                s64 archive_size = FileArchiveWriter::HeaderSize;
+                for (const auto &it : m_index) {
+                    R_UNLESS(it.GetValueSize() <= UINT32_MAX, kvdb::ResultInvalidKeyValue());
+                    const u64 entry_size = FileArchiveWriter::HeaderSize + sizeof(Key) + static_cast<u64>(it.GetValueSize());
+                    R_UNLESS(entry_size <= static_cast<u64>(INT64_MAX - archive_size), kvdb::ResultInvalidKeyValue());
+                    archive_size += static_cast<s64>(entry_size);
+                }
+
+                R_DISCARD(fs::DeleteFile(path));
+                R_TRY(fs::CreateFile(path, archive_size));
+                fs::FileHandle file;
+                R_TRY(fs::OpenFile(std::addressof(file), path, fs::OpenMode_Write));
+                ON_SCOPE_EXIT { fs::CloseFile(file); };
+
+                FileArchiveWriter writer(file);
+                R_TRY(writer.WriteHeader(this->GetCount()));
+                for (const auto &it : m_index) {
+                    const auto &key = it.GetKey();
+                    R_TRY(writer.WriteEntry(std::addressof(key), sizeof(Key), it.GetValuePointer(), it.GetValueSize()));
+                }
+                R_TRY(fs::FlushFile(file));
+                R_SUCCEED();
+            }
+
             Result SaveArchiveToFile(const char *path, const void *buf, size_t size) {
                 /* Try to delete the archive, but allow deletion failure. */
                 R_DISCARD(fs::DeleteFile(path));

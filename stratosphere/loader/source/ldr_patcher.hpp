@@ -18,10 +18,39 @@
 
 namespace ams::ldr {
 
+    enum class NsPrePglPatchApplyStatus : u32 {
+        NotObserved          = 0,
+        ExactPatchApplied    = 1,
+        InvalidEntryCount    = 2,
+        EntryOutOfBounds     = 3,
+        OriginalByteMismatch = 4,
+        UnknownNsMainModule  = 5,
+    };
+
+    enum class NsPrePglPatchFinalStatus : u32 {
+        NotObserved          = 0,
+        ReplacementsVerified = 1,
+        OriginalsPresent     = 2,
+        MixedOrOtherBytes    = 3,
+        EntryOutOfBounds     = 4,
+        UnknownNsMainModule  = 5,
+    };
+
+    struct NsPrePglPatchDiagnostic {
+        NsPrePglPatchApplyStatus apply_status;
+        NsPrePglPatchFinalStatus final_status;
+        u32 pre_patch_words[2];
+        u32 final_words[2];
+        u32 module_id_words[2];
+        u64 mapped_size;
+    };
+
     /* Apply IPS patches. */
     void LocateAndApplyIpsPatchesToModule(const u8 *module_id_data, uintptr_t mapped_nso, size_t mapped_size);
 
     /* Apply embedded patches. */
     void ApplyEmbeddedPatchesToModule(const u8 *module_id_data, uintptr_t mapped_nso, size_t mapped_size);
+    void FinalizeEmbeddedPatchDiagnostics(ncm::ProgramId program_id, bool is_main_nso, const u8 *module_id_data, uintptr_t mapped_nso, size_t mapped_size);
+    NsPrePglPatchDiagnostic GetNsPrePglPatchDiagnostic();
 
 }

@@ -39,6 +39,7 @@ namespace ams::fssystem {
             const s32 m_slot_index;
             u8 m_key1[KeySize];
             s32 m_key2;
+            bool m_valid = false;
         public:
             explicit KeySlotCacheEntry(s32 idx) : m_slot_index(idx), m_key2(-1) {
                 std::memset(m_key1, 0, sizeof(m_key1));
@@ -48,7 +49,7 @@ namespace ams::fssystem {
                 AMS_ASSERT(key_size == KeySize);
                 AMS_UNUSED(key_size);
 
-                return key2 == m_key2 && std::memcmp(m_key1, key, KeySize) == 0;
+                return m_valid && key2 == m_key2 && std::memcmp(m_key1, key, KeySize) == 0;
             }
 
             s32 GetKeySlotIndex() const { return m_slot_index; }
@@ -57,7 +58,10 @@ namespace ams::fssystem {
                 AMS_ASSERT(key_size == KeySize);
                 std::memcpy(m_key1, key, key_size);
                 m_key2 = key2;
+                m_valid = true;
             }
+
+            void Invalidate() { m_valid = false; }
     };
 
     class KeySlotCache {
@@ -69,8 +73,27 @@ namespace ams::fssystem {
             os::SdkMutex m_mutex;
             KeySlotCacheEntryList m_high_priority_mru_list;
             KeySlotCacheEntryList m_low_priority_mru_list;
+            bool m_force_reload = false;
         public:
             constexpr KeySlotCache() : m_mutex(), m_high_priority_mru_list(), m_low_priority_mru_list() { /* ... */ }
+
+            void BeginSleep() {
+                // The accessor holds this mutex through ComputeCtr. Drain any
+                // existing lease before permitting the sleep acknowledgement.
+                util::unique_lock lk(m_mutex);
+                m_force_reload = true;
+            }
+
+            bool EndSleep() {
+                util::unique_lock lk(m_mutex);
+                if (!m_force_reload) return false;
+                // A fresh reader shares this cache with an already-open one.
+                // Keep the virtual slots, but force SPL to load each next use.
+                for (auto &entry : m_high_priority_mru_list) entry.Invalidate();
+                for (auto &entry : m_low_priority_mru_list) entry.Invalidate();
+                m_force_reload = false;
+                return true;
+            }
 
             Result AllocateHighPriority(std::unique_ptr<KeySlotCacheAccessor> *out, const void *key, size_t key_size, s32 key2) {
                 R_RETURN(this->AllocateFromLru(out, m_high_priority_mru_list, key, key_size, key2));
@@ -82,6 +105,9 @@ namespace ams::fssystem {
 
             Result Find(std::unique_ptr<KeySlotCacheAccessor> *out, const void *key, size_t key_size, s32 key2) {
                 util::unique_lock lk(m_mutex);
+                // Buffered ciphertext can reach the decryptor before the USB
+                // recovery worker. A miss invokes the normal physical reload.
+                R_UNLESS(!m_force_reload, fs::ResultTargetNotFound());
 
                 KeySlotCacheEntryList *lists[2] = { std::addressof(m_high_priority_mru_list), std::addressof(m_low_priority_mru_list) };
                 for (auto list : lists) {

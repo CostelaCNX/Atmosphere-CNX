@@ -21,9 +21,18 @@ namespace ams::ncm {
 
     class ContentMetaDatabaseImpl : public ContentMetaDatabaseImplBase {
         public:
-            ContentMetaDatabaseImpl(ContentMetaKeyValueStore *kvs, const char *mount_name) : ContentMetaDatabaseImplBase(kvs, mount_name) { /* ... */ }
-            ContentMetaDatabaseImpl(ContentMetaKeyValueStore *kvs) : ContentMetaDatabaseImplBase(kvs) { /* ... */ }
+            ContentMetaDatabaseImpl(ContentMetaKeyValueStore *kvs, const char *mount_name) : ContentMetaDatabaseImplBase(kvs, mount_name), m_storage_id(StorageId::None), m_pending_usb_title_ids(), m_pending_usb_title_id_count(0), m_pending_stock_title_ids(), m_pending_stock_title_id_count(0) { /* ... */ }
+            ContentMetaDatabaseImpl(ContentMetaKeyValueStore *kvs, const char *mount_name, StorageId storage_id) : ContentMetaDatabaseImplBase(kvs, mount_name), m_storage_id(storage_id), m_pending_usb_title_ids(), m_pending_usb_title_id_count(0), m_pending_stock_title_ids(), m_pending_stock_title_id_count(0) { /* ... */ }
+            ContentMetaDatabaseImpl(ContentMetaKeyValueStore *kvs) : ContentMetaDatabaseImplBase(kvs), m_storage_id(StorageId::None), m_pending_usb_title_ids(), m_pending_usb_title_id_count(0), m_pending_stock_title_ids(), m_pending_stock_title_id_count(0) { /* ... */ }
         private:
+            static constexpr s32 MaxPendingUsbTitleIds = 32;
+
+            StorageId m_storage_id;
+            ContentMetaKey m_pending_usb_title_ids[MaxPendingUsbTitleIds];
+            s32 m_pending_usb_title_id_count;
+            ContentMetaKey m_pending_stock_title_ids[MaxPendingUsbTitleIds];
+            s32 m_pending_stock_title_id_count;
+
             /* Helpers. */
             Result GetContentInfoImpl(ContentInfo *out, const ContentMetaKey &key, ContentType type, util::optional<u8> id_offset) const;
 

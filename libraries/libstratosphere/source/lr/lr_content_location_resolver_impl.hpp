@@ -34,6 +34,7 @@ namespace ams::lr {
             ~ContentLocationResolverImpl();
         private:
             /* Helper functions. */
+            Result TryResolveUsbProgramPath(Path *out, RedirectionAttributes *out_attr, ncm::ProgramId id);
             void GetContentStoragePath(Path *out, ncm::ContentId content_id);
             Result ResolveProgramPath(Path *out, RedirectionAttributes *out_attr, ncm::ProgramId id);
         public:

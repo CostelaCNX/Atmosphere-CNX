@@ -14,14 +14,47 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <stratosphere.hpp>
+#include "ncm_pinned_usb_content_storage.hpp"
+#include "ncm_native_sd_content_storage.hpp"
+#include <stratosphere/ncm/ncm_usb_overlay_content_storage_impl.hpp>
+#include <stratosphere/usb/usb_content_proxy.hpp>
 #include "ncm_content_storage_impl.hpp"
 #include "ncm_read_only_content_storage_impl.hpp"
 #include "ncm_host_content_storage_impl.hpp"
 #include "ncm_content_meta_database_impl.hpp"
+#include "ncm_paged_content_meta_database_impl.hpp"
 #include "ncm_on_memory_content_meta_database_impl.hpp"
 #include "ncm_fs_utils.hpp"
+#include "ncm_lookup_trace.hpp"
+#include "ncm_usb_content_file_system.hpp"
+#include "../fs/fsa/fs_mount_utils.hpp"
 
 namespace ams::ncm {
+
+    namespace {
+
+        void UnmountMetadataSaveIfMounted(const char *mount_name, const char *path, StorageId storage_id) {
+            /* A paged save may have failed to remount after an attempted grow.
+             * Query the local mount registry before Unmount, which otherwise
+             * aborts for a missing mount. No filesystem I/O is needed here. */
+            if (storage_id == StorageId::SdCard || storage_id == StorageId::BuiltInUser) {
+                fs::impl::FileSystemAccessor *accessor = nullptr;
+                const char *sub_path = nullptr;
+                if (R_FAILED(fs::impl::FindFileSystem(std::addressof(accessor), std::addressof(sub_path), path))) {
+                    return;
+                }
+            }
+            fs::Unmount(mount_name);
+        }
+
+        constinit os::SdkMutex g_usb_route_stats_mutex;
+        constinit u32 g_usb_route_requests;
+        constinit u32 g_usb_route_successes;
+        constinit u32 g_usb_route_fallbacks;
+        constinit StorageId g_usb_last_requested_storage = StorageId::None;
+        constinit StorageId g_usb_last_selected_storage = StorageId::None;
+        constinit Result g_usb_last_route_result = ResultSuccess();
+    }
 
     namespace {
 
@@ -165,7 +198,7 @@ namespace ams::ncm {
             }
 
             /* Mount the relevant content storage. */
-            R_TRY(fs::MountContentStorage(root.mount_name, root.config->content_storage_id));
+            R_TRY(MountUsbAwareContentStorage(root.mount_name, root.config->content_storage_id));
             ON_SCOPE_EXIT { fs::Unmount(root.mount_name); };
 
             /* Ensure the content storage root's path exists. */
@@ -195,7 +228,7 @@ namespace ams::ncm {
             ReplaceMountName(path, mount_name.str, root.path);
 
             /* Mount the relevant content storage. */
-            R_TRY(fs::MountContentStorage(mount_name.str, root.config->content_storage_id));
+            R_TRY(MountUsbAwareContentStorage(mount_name.str, root.config->content_storage_id));
             ON_SCOPE_EXIT { fs::Unmount(mount_name.str); };
 
             /* Ensure the root, content and placeholder directories exist for the storage. */
@@ -325,8 +358,17 @@ namespace ams::ncm {
         /* Handle based on whether or not we have a content storage config. */
         if (root.config.has_value()) {
             /* Mount the content storage. */
-            R_TRY(fs::MountContentStorage(root.mount_name, root.config->content_storage_id));
+            R_TRY(MountUsbAwareContentStorage(root.mount_name, root.config->content_storage_id));
             ON_RESULT_FAILURE { fs::Unmount(root.mount_name); };
+
+            if (root.storage_id == StorageId::SdCard) {
+                auto content_storage = sf::CreateSharedObjectEmplaced<IContentStorage, NativeSdContentStorage>();
+                R_UNLESS(content_storage != nullptr, fs::ResultAllocationMemoryFailed());
+                R_TRY(content_storage.GetImpl().Initialize(root.path, MakeSha256HierarchicalContentFilePath_ForFat16KCluster,
+                    MakeSha256HierarchicalPlaceHolderFilePath_ForFat16KCluster, true, std::addressof(rights_id_cache)));
+                root.content_storage = std::move(content_storage);
+                R_SUCCEED();
+            }
 
             /* Create a content storage. */
             auto content_storage = sf::CreateSharedObjectEmplaced<IContentStorage, ContentStorageImpl>();
@@ -335,9 +377,6 @@ namespace ams::ncm {
             switch (root.storage_id) {
                 case StorageId::BuiltInSystem:
                     R_TRY(content_storage.GetImpl().Initialize(root.path, MakeFlatContentFilePath, MakeFlatPlaceHolderFilePath, false, std::addressof(rights_id_cache)));
-                    break;
-                case StorageId::SdCard:
-                    R_TRY(content_storage.GetImpl().Initialize(root.path, MakeSha256HierarchicalContentFilePath_ForFat16KCluster, MakeSha256HierarchicalPlaceHolderFilePath_ForFat16KCluster, true, std::addressof(rights_id_cache)));
                     break;
                 default:
                     R_TRY(content_storage.GetImpl().Initialize(root.path, MakeSha256HierarchicalContentFilePath_ForFat16KCluster, MakeSha256HierarchicalPlaceHolderFilePath_ForFat16KCluster, false, std::addressof(rights_id_cache)));
@@ -520,7 +559,7 @@ namespace ams::ncm {
 
                 /* Additionally, if we have savedata, unmount. */
                 if (root.save_data_info.has_value()) {
-                    fs::Unmount(root.mount_name);
+                    UnmountMetadataSaveIfMounted(root.mount_name, root.path, root.storage_id);
                 }
             }
         }
@@ -539,14 +578,25 @@ namespace ams::ncm {
         if (root.save_data_info.has_value()) {
             /* Mount save data for this root. */
             R_TRY(fs::MountSystemSaveData(root.mount_name, root.save_data_info->space_id, root.save_data_info->id));
-            ON_RESULT_FAILURE { fs::Unmount(root.mount_name); };
+            ON_RESULT_FAILURE { UnmountMetadataSaveIfMounted(root.mount_name, root.path, root.storage_id); };
+
+            /* User databases grow on storage. Boot/system and temporary roots
+             * retain their original memory-backed semantics and mount lifetime. */
+            if (root.storage_id == StorageId::SdCard || root.storage_id == StorageId::BuiltInUser) {
+                auto database = sf::CreateSharedObjectEmplaced<IContentMetaDatabase, PagedContentMetaDatabaseImpl>(root.storage_id);
+                R_UNLESS(database != nullptr, ncm::ResultAllocationFailed());
+                R_TRY(database.GetImpl().Initialize(root.path, root.mount_name, root.save_data_info->space_id, root.save_data_info->id));
+                root.content_meta_database = database;
+                root.kvs = util::nullopt;
+                R_SUCCEED();
+            }
 
             /* Initialize and load the key value store from the filesystem. */
             R_TRY(root.kvs->Initialize(root.path, root.max_content_metas, root.memory_resource));
-            R_TRY(root.kvs->Load());
+            R_TRY(root.kvs->LoadStreaming());
 
             /* Create the content meta database. */
-            root.content_meta_database = sf::CreateSharedObjectEmplaced<IContentMetaDatabase, ContentMetaDatabaseImpl>(std::addressof(*root.kvs), root.mount_name);
+            root.content_meta_database = sf::CreateSharedObjectEmplaced<IContentMetaDatabase, ContentMetaDatabaseImpl>(std::addressof(*root.kvs), root.mount_name, root.storage_id);
         } else {
             if (root.storage_id == StorageId::BuiltInSystem) {
                 /* Create a temporary mount name, and mount the partition. */
@@ -567,7 +617,7 @@ namespace ams::ncm {
                 char path[fs::EntryNameLengthMax];
                 util::SNPrintf(path, sizeof(path), "%s:/cnmtdb.arc", tmp_mount_name.str);
                 R_TRY(root.kvs->InitializeForReadOnlyArchiveFile(path, root.max_content_metas, root.memory_resource));
-                R_TRY(root.kvs->Load());
+                R_TRY(root.kvs->LoadStreaming());
 
                 /* Create an on memory content meta database. */
                 root.content_meta_database = sf::CreateSharedObjectEmplaced<IContentMetaDatabase, OnMemoryContentMetaDatabaseImpl>(std::addressof(*root.kvs));
@@ -616,6 +666,12 @@ namespace ams::ncm {
     ContentManagerImpl::~ContentManagerImpl() {
         std::scoped_lock lk(m_mutex);
 
+        if (m_native_sd_content_storage != nullptr) {
+            R_DISCARD(m_native_sd_content_storage->DisableForcibly());
+            m_native_sd_content_storage = nullptr;
+            fs::Unmount("native_sd");
+        }
+
         /* Disable and unmount all content storage roots. */
         for (size_t i = 0; i < m_num_integrated_content_storage_entries; ++i) {
             R_DISCARD(this->InactivateContentStorage(m_integrated_content_storage_roots[i].m_config->storage_id));
@@ -657,6 +713,42 @@ namespace ams::ncm {
         R_THROW(ncm::ResultUnknownStorage());
     }
 
+    StorageId ContentManagerImpl::ResolveUserContentStorageId(StorageId storage_id) {
+        /* DBI and similar installers perform the normal NCM placeholder and
+         * content writes through IContentStorage directly. Resolve at the
+         * public NCM storage boundary so an explicitly armed USB install
+         * cannot be silently redirected to SD by a transient worker-state
+         * sample. Host operations perform the bounded ready/writable wait. */
+        const bool use_usb = ShouldUseUsbContentForInstall(storage_id);
+        {
+            std::scoped_lock lk(g_usb_route_stats_mutex);
+            ++g_usb_route_requests;
+            g_usb_last_requested_storage = storage_id;
+            g_usb_last_selected_storage = use_usb ? StorageId::Host : storage_id;
+            g_usb_last_route_result = ResultSuccess();
+            if (use_usb) {
+                ++g_usb_route_successes;
+            } else {
+                ++g_usb_route_fallbacks;
+            }
+        }
+
+        /* The SD-facing overlay preserves logical storage identity. Its
+         * placeholder writes use USB; its reads select exact content IDs. */
+        return use_usb ? StorageId::Host : storage_id;
+    }
+
+    void GetUsbContentRouteStats(UsbContentStatus *out) {
+        AMS_ASSERT(out != nullptr);
+        std::scoped_lock lk(g_usb_route_stats_mutex);
+        out->route_requests = g_usb_route_requests;
+        out->route_successes = g_usb_route_successes;
+        out->route_fallbacks = g_usb_route_fallbacks;
+        out->last_requested_storage = static_cast<u8>(g_usb_last_requested_storage);
+        out->last_selected_storage = static_cast<u8>(g_usb_last_selected_storage);
+        out->last_route_result = g_usb_last_route_result.GetValue();
+    }
+
     Result ContentManagerImpl::GetIntegratedContentMetaDatabaseRoot(IntegratedContentMetaDatabaseRoot **out, StorageId id) {
         /* Storage must not be StorageId::Any or StorageId::None. */
         R_UNLESS(IsUniqueStorage(id), ncm::ResultUnknownStorage());
@@ -692,6 +784,11 @@ namespace ams::ncm {
         /* Set the storage-specific info. */
         switch (storage_id) {
             case ncm::StorageId::Host:
+                /* Keep the optional Host metadata root inert during NCM
+                 * initialization. Reading the USB-content setting here
+                 * makes boot depend on settings-service availability. The
+                 * Host root is verified/activated lazily from the first
+                 * actual Host content operation instead. */
                 out->save_data_info    = util::nullopt;
                 out->max_content_metas = HostMaxContentMetaCount;
                 out->memory_resource   = std::addressof(g_sd_and_user_content_meta_memory_resource);
@@ -1070,24 +1167,163 @@ namespace ams::ncm {
         R_RETURN(root->Verify());
     }
 
+    Result ContentManagerImpl::OpenPinnedUsbContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out, u64 generation) {
+        std::scoped_lock lk(m_mutex);
+        R_UNLESS(generation != 0, fs::ResultInvalidArgument());
+        auto storage = sf::CreateSharedObjectEmplaced<IContentStorage, PinnedUsbContentStorage>();
+        R_UNLESS(storage != nullptr, fs::ResultAllocationMemoryFailed());
+        R_TRY(storage.GetImpl().InitializePinned(generation, std::addressof(m_rights_id_cache)));
+        out.SetValue(std::move(storage));
+        R_SUCCEED();
+    }
+
+    Result ContentManagerImpl::EnsureUsbContentRegistered(u64 generation, ContentId content_id, s64 expected_size) {
+        R_UNLESS(generation != 0 && content_id != InvalidContentId && expected_size > 0, fs::ResultInvalidArgument());
+        std::unique_lock lk(m_mutex);
+        auto storage = sf::CreateSharedObjectEmplaced<IContentStorage, PinnedUsbContentStorage>();
+        R_UNLESS(storage != nullptr, fs::ResultAllocationMemoryFailed());
+        // Match OpenPinned's mount-name serialization and shared rights cache.
+        R_TRY(storage.GetImpl().InitializePinned(generation, std::addressof(m_rights_id_cache)));
+        lk.unlock();
+        // The isolated pinned object owns physical validation and durable index
+        // publication. Propagate its result; no map lock surrounds USB calls.
+        R_RETURN(storage.GetImpl().EnsureRegistered(content_id, expected_size));
+    }
+
+    Result ContentManagerImpl::OpenNativeSdContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out) {
+        std::scoped_lock lk(m_mutex);
+        // Private post-boot mount. No changes to global USB/launch routing.
+        if (m_native_sd_content_storage == nullptr) {
+            R_TRY(MountNativeSdContentStorage("native_sd"));
+            ON_RESULT_FAILURE { fs::Unmount("native_sd"); };
+            auto storage = sf::CreateSharedObjectEmplaced<IContentStorage, NativeSdContentStorage>();
+            R_UNLESS(storage != nullptr, fs::ResultAllocationMemoryFailed());
+            // Match ordinary NCM root construction ("%s:/"). VerifyBase also
+            // queries the root itself; "native_sd:" has an empty sub-path and
+            // FindFileSystem rejects it with InvalidPathFormat (0x002EEA02).
+            constexpr const char *NativeSdRoot = "native_sd:/";
+            R_TRY(ContentStorageImpl::InitializeBase(NativeSdRoot));
+            R_TRY(storage.GetImpl().Initialize(NativeSdRoot, MakeSha256HierarchicalContentFilePath_ForFat16KCluster,
+                MakeSha256HierarchicalPlaceHolderFilePath_ForFat16KCluster, true, std::addressof(m_rights_id_cache)));
+            m_native_sd_content_storage = std::move(storage);
+        }
+        out.SetValue(m_native_sd_content_storage);
+        R_SUCCEED();
+    }
+
     Result ContentManagerImpl::OpenContentStorage(sf::Out<sf::SharedPointer<IContentStorage>> out, StorageId storage_id) {
+        const StorageId trace_storage_id = storage_id;
+        const Result trace_result = [&]() -> Result {
+        /* Keep the externally visible storage identity as SdCard. Always hand
+         * out the dynamic wrapper for SD, including during Horizon boot. The
+         * wrapper is stock-only until the post-boot USB route is armed, which
+         * lets an object cached by ns switch later without reopening NCM. */
+        const StorageId requested_storage_id = storage_id;
+        AMS_UNUSED(this->ResolveUserContentStorageId(storage_id));
+        /* The direct NCM overlay and command-110 filesystem overlay are
+         * mutually exclusive. R99-R109 proved that returning the direct
+         * wrapper changes the pre-CreateApplication launch sequence. In the
+         * filesystem route, return NCM's ordinary SD object; its underlying
+         * fsp-srv filesystem is the only layer that redirects content bytes. */
+        const bool use_usb_overlay = !usb::content::UseFileSystemContentRoute
+            && requested_storage_id == StorageId::SdCard;
+
+        if (use_usb_overlay) {
+            /* Creating HostContentStorageImpl is local. USB startup and waits
+             * happen only if the wrapper selects it for an actual operation. */
+
+            std::scoped_lock lk(m_mutex);
+
+            IntegratedContentStorageRoot *stock_root;
+            R_TRY(this->GetIntegratedContentStorageRoot(std::addressof(stock_root), requested_storage_id));
+
+            /* Keep the stock SD backend tied to its normal NCM lifecycle. */
+            R_TRY(stock_root->Activate(m_rights_id_cache, m_registered_host_content));
+
+            sf::SharedPointer<IContentStorage> stock_storage;
+            R_TRY(stock_root->Open(std::addressof(stock_storage), m_rights_id_cache, m_registered_host_content));
+
+            /* Give each SD overlay its own Host proxy. Reusing the global Host
+             * root is incorrect here: CloseContentStorageForcibly(Host), which
+             * installers legitimately issue after a transaction, disables
+             * that root's object. Long-lived SD handles cached by ns then keep
+             * the disabled Host pointer and mapped control-data reads fail with
+             * ResultInvalidContentStorage (0xC805). The private proxy has no
+             * independent mount or USB session; it uses the same bounded
+             * ams:usb provider and remains valid for the overlay's lifetime. */
+            auto host_storage = sf::CreateSharedObjectEmplaced<IContentStorage, HostContentStorageImpl>(std::addressof(m_registered_host_content));
+            R_UNLESS(host_storage != nullptr, ncm::ResultAllocationFailed());
+
+            auto overlay = sf::CreateSharedObjectEmplaced<IContentStorage, UsbOverlayContentStorageImpl>(std::move(host_storage), std::move(stock_storage));
+            R_UNLESS(overlay != nullptr, ncm::ResultAllocationFailed());
+            *out = std::move(overlay);
+            R_SUCCEED();
+        }
+
+        storage_id = requested_storage_id;
+
+        const bool use_usb_host = storage_id == StorageId::Host;
+        if (use_usb_host) {
+            R_UNLESS(IsUsbContentEnabled(), ncm::ResultUnknownContentStorageNotActive());
+        }
+
         std::scoped_lock lk(m_mutex);
 
         /* Obtain the integrated content storage root. */
         IntegratedContentStorageRoot *root;
         R_TRY(this->GetIntegratedContentStorageRoot(std::addressof(root), storage_id));
 
+        /* Keep the optional Host backend out of the boot path. */
+        if (use_usb_host) {
+            R_TRY(root->Activate(m_rights_id_cache, m_registered_host_content));
+        }
+
         R_RETURN(root->Open(out, m_rights_id_cache, m_registered_host_content));
+        }();
+        lookup_trace::Storage(usb_recovery::LookupOperation::OpenStorage, trace_storage_id, InvalidContentId,
+            trace_result, R_SUCCEEDED(trace_result), false, "requested storage");
+        R_RETURN(trace_result);
     }
 
     Result ContentManagerImpl::OpenContentMetaDatabase(sf::Out<sf::SharedPointer<IContentMetaDatabase>> out, StorageId storage_id) {
+        const Result trace_result = [&]() -> Result {
+        /* NCM metadata is a logical record keyed by StorageId; it does not
+         * contain a filesystem path. Keep the normal SD/BuiltInUser database
+         * by default so records survive reboot. For a diagnostic experiment,
+         * explicitly route the live metadata interface to Host after USB is
+         * ready. Host metadata is in-memory in this build and is therefore
+         * intentionally not a normal persistent mode. */
         std::scoped_lock lk(m_mutex);
+
+        /* Keep user-content metadata on its requested stock database. The
+         * USB extension redirects the NCA content storage separately; title
+         * metadata must remain on SD/BuiltInUser so Horizon's ns service can
+         * consume normal storage records and the records survive a USB
+         * disconnect or reboot. */
 
         /* Obtain the integrated content meta database root. */
         IntegratedContentMetaDatabaseRoot *root;
         R_TRY(this->GetIntegratedContentMetaDatabaseRoot(std::addressof(root), storage_id));
 
+        /* Keep the optional Host backend out of the boot path. */
+        if (storage_id == StorageId::Host && IsUsbContentEnabled()) {
+            const bool has_intf = root->m_config->is_integrated ? root->m_integrated_content_meta_database != nullptr : root->m_roots->content_meta_database != nullptr;
+            if (!has_intf) {
+                /* Lazily create the persistent Host metadata database on its
+                 * first real use, rather than mounting/creating it during
+                 * NCM startup. */
+                if (R_FAILED(root->Verify())) {
+                    R_TRY(root->Create());
+                }
+                R_TRY(root->Activate());
+            }
+        }
+
         R_RETURN(root->Open(out));
+        }();
+        lookup_trace::Storage(usb_recovery::LookupOperation::OpenMetadata, storage_id, InvalidContentId,
+            trace_result, R_SUCCEEDED(trace_result), false, "requested metadata database (DB2R1 range-compatible user databases)");
+        R_RETURN(trace_result);
     }
 
     Result ContentManagerImpl::CloseContentStorageForcibly(StorageId storage_id) {
@@ -1205,6 +1441,46 @@ namespace ams::ncm {
             R_TRY(root->Activate(content_storage_id));
         }
 
+        R_SUCCEED();
+    }
+
+    Result ContentManagerImpl::GetUsbContentStatus(sf::Out<UsbContentStatus> out) {
+        UsbContentStatus status{};
+        R_TRY(GetUsbContentStatusImpl(std::addressof(status)));
+        /* ams_mitm polls this only from its delayed monitor. Prime the exact
+         * title/content reverse map after a medium is ready, before the
+         * Mounted notification is published. This is deliberately absent from
+         * NCM startup and application-launch IPC. Failure leaves status usable
+         * and the resolver fails closed. */
+        if (status.ready != 0) {
+            AMS_UNUSED(RefreshUsbProgramIdCache(status.media_generation));
+        }
+        GetUsbContentRouteStats(std::addressof(status));
+        GetUsbContentRegistrationStats(std::addressof(status));
+        out.SetValue(status);
+        R_SUCCEED();
+    }
+
+    Result ContentManagerImpl::SetUsbContentRouteEnabled(bool enabled) {
+        /* This command selects the destination for future logical-SD writes;
+         * it no longer disables reads for content already mapped to USB.
+         * No worker or storage probe is started here. */
+        ncm::SetUsbContentRuntimeEnabled(true);
+        ncm::SetUsbContentInstallTargetEnabled(enabled);
+        R_SUCCEED();
+    }
+
+    Result ContentManagerImpl::RefreshUsbContentStatus() {
+        R_RETURN(RefreshUsbContentStatusImpl());
+    }
+
+    Result ContentManagerImpl::SetUsbContentNativePathEnabled(bool enabled) {
+        SetUsbContentNativePathEnabledLocal(enabled);
+        R_SUCCEED();
+    }
+
+    Result ContentManagerImpl::SetUsbContentMetadataRouteEnabled(bool enabled) {
+        SetUsbContentMetadataRouteEnabledLocal(enabled);
         R_SUCCEED();
     }
 

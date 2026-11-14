@@ -41,4 +41,5 @@
 #include <stratosphere/ncm/ncm_registered_host_content.hpp>
 #include <stratosphere/ncm/ncm_submission_package_install_task.hpp>
 #include <stratosphere/ncm/ncm_storage_utils.hpp>
+#include <stratosphere/ncm/ncm_usb_title_map.hpp>
 #include <stratosphere/ncm/ncm_api.hpp>

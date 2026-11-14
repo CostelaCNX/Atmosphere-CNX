@@ -7,6 +7,10 @@ include $(dir $(abspath $(lastword $(MAKEFILE_LIST))))/../../libraries/config/te
 
 ATMOSPHERE_SYSTEM_MODULE_TARGETS := kip
 
+# SD1_WRAP: bounded native-SD counters, transparent to service results.
+LDFLAGS += -Wl,--wrap,fsOpenSdCardFileSystem -Wl,--wrap,fsOpenSdCardFileSystemFwd -Wl,--wrap,fsOpenContentStorageFileSystem -Wl,--wrap,fsOpenContentStorageFileSystemFwd -Wl,--wrap,fsFsOpenFile -Wl,--wrap,fsFsOpenDirectory -Wl,--wrap,fsFsClose -Wl,--wrap,fsFileClose -Wl,--wrap,fsDirClose -Wl,--wrap,fsFileRead -Wl,--wrap,fsFileWrite -Wl,--wrap,fsFileFlush -Wl,--wrap,fsFileGetSize -Wl,--wrap,fsFileSetSize -Wl,--wrap,fsFsCommit -Wl,--wrap,fsDirRead -Wl,--wrap,fsDirGetEntryCount -Wl,--wrap,fsFsCreateFile -Wl,--wrap,fsFsGetEntryType -Wl,--wrap,fsFsGetFileTimeStampRaw -Wl,--wrap,fsFileOperateRange -Wl,--wrap,fsFsQueryEntry -Wl,--wrap,fsFsDeleteFile -Wl,--wrap,fsFsCreateDirectory -Wl,--wrap,fsFsDeleteDirectory -Wl,--wrap,fsFsDeleteDirectoryRecursively -Wl,--wrap,fsFsCleanDirectoryRecursively -Wl,--wrap,fsFsGetFreeSpace -Wl,--wrap,fsFsGetTotalSpace -Wl,--wrap,fsFsRenameFile -Wl,--wrap,fsFsRenameDirectory
+
+
 #---------------------------------------------------------------------------------
 # no real need to edit anything past this point unless you need to add additional
 # rules for different file extensions
@@ -20,7 +24,7 @@ export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
 			$(foreach dir,$(DATA),$(CURDIR)/$(dir))
 
 CFILES      :=	$(call FIND_SOURCE_FILES,$(SOURCES),c)
-CPPFILES    :=	$(call FIND_SOURCE_FILES,$(SOURCES),cpp)
+CPPFILES    :=	$(filter-out usb_probe_module.cpp,$(call FIND_SOURCE_FILES,$(SOURCES),cpp))
 SFILES      :=	$(call FIND_SOURCE_FILES,$(SOURCES),s)
 
 BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
@@ -110,6 +114,18 @@ $(OUTPUT).nso :	$(OUTPUT).elf
 $(OUTPUT).elf :	$(OFILES)
 
 $(OFILES) : $(ATMOSPHERE_LIBRARIES_DIR)/libstratosphere/$(ATMOSPHERE_LIBRARY_DIR)/libstratosphere.a
+
+# usbmitm_module.cpp is intentionally large. Keep LTO disabled so the isolated
+# experimental rebuild remains responsive on memory-constrained Windows hosts,
+# but optimize this object for size so the enabled filesystem route still fits
+# in package3's fixed KIP region.
+usbmitm_module.o: CXXFLAGS += -fno-lto -Os
+
+# P6's cold NS dispatch/diagnostic wrappers must fit the existing fixed KIP
+# region. Size-optimize these two units only; no region/capability changes.
+# Depend on this recipe so changing flags cannot reuse an old object silently.
+nsmitm_module.o ns_verification_trace.o: CXXFLAGS += -Os
+nsmitm_module.o ns_verification_trace.o: $(THIS_MAKEFILE)
 
 %.npdm  :   %.npdm.json
 	@echo built ... $< $@

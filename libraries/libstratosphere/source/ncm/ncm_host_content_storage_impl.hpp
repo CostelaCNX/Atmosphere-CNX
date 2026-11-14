@@ -18,6 +18,10 @@
 
 namespace ams::ncm {
 
+    /* Returns whether the NCM-owned USB volume is currently available for
+     * new content writes, without requiring fssystem mount registration. */
+    bool IsUsbContentStorageReadyForRouting();
+
     class HostContentStorageImpl {
         protected:
             RegisteredHostContent *m_registered_content;

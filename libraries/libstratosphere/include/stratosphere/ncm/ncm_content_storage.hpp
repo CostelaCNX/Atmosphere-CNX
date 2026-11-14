@@ -82,9 +82,9 @@ namespace ams::ncm {
                 R_RETURN(m_interface->Has(out, content_id));
             }
 
-            void GetPath(Path *out, ContentId content_id) {
+            Result GetPath(Path *out, ContentId content_id) {
                 AMS_ASSERT(m_interface != nullptr);
-                R_ABORT_UNLESS(m_interface->GetPath(out, content_id));
+                R_RETURN(m_interface->GetPath(out, content_id));
             }
 
             void GetPlaceHolderPath(Path *out, PlaceHolderId placeholder_id) {

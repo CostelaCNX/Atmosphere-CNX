@@ -15,6 +15,7 @@
  */
 #include <stratosphere.hpp>
 #include "fssystem_key_slot_cache.hpp"
+#include "fssystem_hardware_key_power.hpp"
 
 namespace ams::fssystem {
 
@@ -296,6 +297,14 @@ namespace ams::fssystem {
             std::unique_ptr<KeySlotCacheAccessor> accessor;
             R_ABORT_UNLESS(g_key_slot_cache.AllocateHighPriority(std::addressof(accessor), InvalidKey, KeySize, -1 - i));
         }
+    }
+
+    void BeginHardwareKeySleep() {
+        g_key_slot_cache.BeginSleep();
+    }
+
+    bool EndHardwareKeySleep() {
+        return g_key_slot_cache.EndSleep();
     }
 
     bool IsValidSignatureKeyGeneration(ncm::ContentMetaPlatform platform, size_t key_generation) {

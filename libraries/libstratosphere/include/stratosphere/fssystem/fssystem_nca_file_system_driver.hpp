@@ -131,7 +131,7 @@ namespace ams::fssystem {
             NcaReader();
             ~NcaReader();
 
-            Result Initialize(std::shared_ptr<fs::IStorage> base_storage, const NcaCryptoConfiguration &crypto_cfg, const NcaCompressionConfiguration &compression_cfg, IHash256GeneratorFactorySelector *hgf_selector);
+            Result Initialize(std::shared_ptr<fs::IStorage> base_storage, const NcaCryptoConfiguration &crypto_cfg, const NcaCompressionConfiguration &compression_cfg, IHash256GeneratorFactorySelector *hgf_selector, bool allow_unsigned_usb_application = false);
 
             std::shared_ptr<fs::IStorage> GetSharedBodyStorage();
             u32 GetMagic() const;
@@ -173,6 +173,10 @@ namespace ams::fssystem {
             IHash256GeneratorFactorySelector *GetHashGeneratorFactorySelector() const;
 
             bool GetHeaderSign1Valid() const;
+            /* Observe the real verification result for diagnostic reporting.
+             * An explicitly accepted invalid USB header must not trigger the
+             * strict getter's Nintendo NX invariant while being logged. */
+            bool GetHeaderSign1VerificationResultForDiagnostics() const;
 
             void GetHeaderSign2(void *dst, size_t size) const;
             void GetHeaderSign2TargetHash(void *dst, size_t size) const;
