@@ -195,19 +195,17 @@ namespace ams::lr {
         /* If we're not enabled, we can't resolve a program. */
         R_UNLESS(m_enabled, lr::ResultProgramNotFound())
 
-        /* Find the latest program content for the program id.  For user
-         * applications, refresh the metadata view at launch time so a title
-         * installed after LR initialization is visible immediately. */
+        /* Find the latest program content for the program id. Prefer the
+         * cached database view for fast and safe resolution, falling back to
+         * a fresh database view if not found (e.g. for dynamic USB-launched titles). */
         ncm::ContentInfo program_content_info;
-        if (!ncm::IsSystemProgramId(id) && (m_storage_id == ncm::StorageId::SdCard || m_storage_id == ncm::StorageId::BuiltInUser)) {
-            R_TRY_CATCH(GetFreshUserProgramContentInfo(std::addressof(program_content_info), m_storage_id, id)) {
-                R_CONVERT(ncm::ResultContentMetaNotFound, lr::ResultProgramNotFound())
-            } R_END_TRY_CATCH;
-        } else {
-            R_TRY_CATCH(m_content_meta_database.GetLatestProgram(std::addressof(program_content_info), id)) {
-                R_CONVERT(ncm::ResultContentMetaNotFound, lr::ResultProgramNotFound())
-            } R_END_TRY_CATCH;
+        Result get_program_result = m_content_meta_database.GetLatestProgram(std::addressof(program_content_info), id);
+        if (R_FAILED(get_program_result) && !ncm::IsSystemProgramId(id) && (m_storage_id == ncm::StorageId::SdCard || m_storage_id == ncm::StorageId::BuiltInUser)) {
+            get_program_result = GetFreshUserProgramContentInfo(std::addressof(program_content_info), m_storage_id, id);
         }
+        R_TRY_CATCH(get_program_result) {
+            R_CONVERT(ncm::ResultContentMetaNotFound, lr::ResultProgramNotFound())
+        } R_END_TRY_CATCH;
 
         /* Obtain the content path and attributes. */
         this->GetContentStoragePath(out, program_content_info.GetId());

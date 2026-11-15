@@ -26,5 +26,6 @@ namespace ams::ldr {
     void FixDebugCapabilityForHbl(util::BitPack32 *kac, size_t count);
 
     void PreProcessCapability(util::BitPack32 *kac, size_t count);
+    void FixDebugCapabilityMismatch(util::BitPack32 *acid_kac, size_t acid_count, util::BitPack32 *aci_kac, size_t aci_count);
 
 }

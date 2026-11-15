@@ -439,6 +439,34 @@ namespace ams::ldr {
         }
     }
 
+    void FixDebugCapabilityMismatch(util::BitPack32 *acid_kac, size_t acid_count, util::BitPack32 *aci_kac, size_t aci_count) {
+        /* Older homebrew/forwarder NSPs often carry ACI debug flags that the ACID does not permit */
+        /* (old bit layout, pre-19.0.0 ABI), which makes TestCapability reject them. */
+        /* Make the ACID permit exactly what the ACI asks for, preserving AllowDebug so dmnt can still attach. */
+        util::BitPack32 *acid_cap = nullptr;
+        for (size_t i = 0; i < acid_count; ++i) {
+            if (GetCapabilityId(acid_kac[i]) == CapabilityId::DebugFlags) {
+                acid_cap = std::addressof(acid_kac[i]);
+                break;
+            }
+        }
+
+        for (size_t i = 0; i < aci_count; ++i) {
+            if (GetCapabilityId(aci_kac[i]) != CapabilityId::DebugFlags) {
+                continue;
+            }
+
+            const auto aci_cap = CapabilityDebugFlags::Decode(aci_kac[i]);
+            if (acid_cap == nullptr) {
+                /* No ACID debug capability to validate against; drop the ACI one instead of failing the launch. */
+                aci_kac[i] = EmptyCapability;
+            } else if (!aci_cap.IsValid(acid_cap, 1)) {
+                *acid_cap = aci_kac[i];
+            }
+            break;
+        }
+    }
+
     void PreProcessCapability(util::BitPack32 *kac, size_t count) {
         for (size_t i = 0; i < count; ++i) {
             const auto cap = kac[i];
@@ -453,7 +481,9 @@ namespace ams::ldr {
                         if (debug_cap.GetForceDebug())     { ++total_flags; }
 
                         /* If more than one flag is set, adjust the capability. */
-                        if (total_flags > 1) {
+                        /* Also promote a lone ForceDebugProd to ForceDebug: pre-19.0.0 NPDMs encode ForceDebug */
+                        /* in the bit that 19.0.0+ reads as ForceDebugProd, which cripples old debugger homebrew. */
+                        if (total_flags > 1 || debug_cap.GetForceDebugProd()) {
                             kac[i] = CapabilityDebugFlags::Encode(
                                 false, /* AllowDebug */
                                 false, /* ForceDebugProd */

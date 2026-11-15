@@ -304,6 +304,7 @@ namespace ams::ldr {
             /* This is used to e.g. avoid passing memory region descriptor to older kernels. */
             PreProcessCapability(static_cast<util::BitPack32 *>(meta->acid_kac), meta->acid->kac_size / sizeof(util::BitPack32));
             PreProcessCapability(static_cast<util::BitPack32 *>(meta->aci_kac),  meta->aci->kac_size  / sizeof(util::BitPack32));
+            FixDebugCapabilityMismatch(static_cast<util::BitPack32 *>(meta->acid_kac), meta->acid->kac_size / sizeof(util::BitPack32), static_cast<util::BitPack32 *>(meta->aci_kac), meta->aci->kac_size / sizeof(util::BitPack32));
 
             /* Set output. */
             m_cached_program_id = loc.program_id;
