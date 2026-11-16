@@ -11,7 +11,7 @@ using namespace ams::mitm::usb_storage::system_power;
 static unsigned checks;
 #define CHECK(x) do{++checks;if(!(x)){std::fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);std::exit(1);}}while(0)
 struct Backend {
-    bool closed{},storage_failed{},queued{},finished{};unsigned background_active{},storage_active{};
+    bool closed{},storage_failed{},queued{},finished{},recovery_allowed{},storage_recovered{};unsigned background_active{},storage_active{};
     unsigned drains{},prepares{},resumes{},acks{},opens{},failures{};
     std::uint32_t drain_result{},prepare_result{},reserve_result{},resume_result{},ack_result{},last_failure{};
     std::string order;
@@ -28,7 +28,10 @@ struct Backend {
     bool IsBackgroundQuiescent(){return background_active==0;}
     bool IsStorageQuiescent(){return !storage_active&&(!queued||finished);}
     void OpenBackground(){++opens;closed=false;order+='O';}
-    void FailStorage(std::uint32_t r){++failures;storage_failed=true;last_failure=r;order+='F';}
+    void FailStorage(std::uint32_t r){++failures;storage_failed=true;recovery_allowed=false;last_failure=r;order+='F';}
+    void AllowStorageRecovery(){recovery_allowed=true;}
+    void DenyStorageRecovery(){recovery_allowed=false;}
+    bool IsStorageRecovered(){return storage_recovered;}
     std::uint32_t Acknowledge(std::uint32_t state){++acks;order+='A';
         if(state>=1&&state<=5)CHECK(closed&&!background_active&&!storage_active);
         return ack_result;}
@@ -133,11 +136,11 @@ static void DrainAndFailures(){
         f.ack_result=72;const auto old_open=f.opens;outcome=failed.Handle(fail_at?0:2,f);
         CHECK(outcome.ack_attempted&&failed.GetPhase()==Phase::Failed&&f.closed&&f.storage_failed&&f.opens==old_open);
         CHECK(failed.Failure()==(fail_at==2?73u:72u));
-        CHECK(!f.queued);
+        CHECK(!f.queued&&!f.recovery_allowed);
     }
     Coordinator refused;Backend rf;CHECK(refused.Handle(2,rf).ack_attempted);
     rf.reserve_result=78;outcome=refused.Handle(0,rf);
-    CHECK(outcome.ack_attempted&&outcome.result==78&&!rf.queued&&!rf.closed&&rf.storage_failed);
+    CHECK(outcome.ack_attempted&&outcome.result==78&&!rf.queued&&!rf.closed&&rf.storage_failed&&rf.recovery_allowed);
     Coordinator interrupted;Backend it;CHECK(interrupted.Handle(2,it).ack_attempted);
     CHECK(interrupted.Handle(0,it).ack_attempted&&it.queued);it.ack_result=72;
     CHECK(!interrupted.Handle(1,it).ack_attempted&&it.closed&&!it.storage_failed);
@@ -149,6 +152,25 @@ static void DrainAndFailures(){
     Coordinator unknown;Backend u;outcome=unknown.Handle(255,u);CHECK(outcome.ack_attempted&&outcome.result==12&&u.storage_failed&&u.closed&&unknown.GetPhase()==Phase::Failed);
     Coordinator drain_fail;Backend d;d.drain_result=77;outcome=drain_fail.Handle(2,d);CHECK(!outcome.ack_attempted&&outcome.result==77&&d.closed&&!d.prepares&&!d.acks);
     d.drain_result=0;outcome=drain_fail.Handle(2,d);CHECK(outcome.ack_attempted&&!outcome.result&&d.prepares==1);
+}
+static void FailedWakeRecovery(){
+    // Issue #13: a failed wake used to keep USB quarantined until reboot.
+    Coordinator c;Backend b;CHECK(c.Handle(2,b).ack_attempted);b.resume_result=71;
+    CHECK(c.Handle(0,b).ack_attempted&&b.queued&&!b.recovery_allowed);
+    b.finished=true;c.PollWake(b);
+    CHECK(c.GetPhase()==Phase::Failed&&b.storage_failed&&b.recovery_allowed&&!b.closed);
+    // Sleeping again before the worker recovers revokes the permission.
+    auto outcome=c.Handle(2,b);CHECK(outcome.ack_attempted&&!b.recovery_allowed&&b.prepares==1&&c.GetPhase()==Phase::Failed);
+    for(unsigned state:{3u,4u,1u}){outcome=c.Handle(state,b);CHECK(outcome.ack_attempted&&!b.recovery_allowed);}
+    outcome=c.Handle(0,b);CHECK(outcome.ack_attempted&&b.recovery_allowed&&c.GetPhase()==Phase::Failed);
+    // Once the worker rediscovered the drive, the next sleep drains storage normally.
+    b.storage_recovered=true;c.PollWake(b);CHECK(c.GetPhase()==Phase::Awake&&c.Failure()==0);
+    b.order.clear();outcome=c.Handle(2,b);
+    CHECK(outcome.ack_attempted&&!outcome.result&&c.GetPhase()==Phase::Asleep&&b.prepares==2&&b.order=="CDPA");
+    // A recovered worker racing a failed-state sleep request is never ACKed as quiescent.
+    Coordinator r;Backend rb;r.Fail(70,rb);rb.storage_recovered=true;rb.storage_active=1;
+    outcome=r.Handle(2,rb);CHECK(!outcome.ack_attempted&&r.GetPhase()!=Phase::Asleep&&rb.prepares==1);
+    rb.storage_active=0;outcome=r.Handle(2,rb);CHECK(outcome.ack_attempted&&!outcome.result&&r.GetPhase()==Phase::Asleep&&rb.prepares==2);
 }
 static void ActivityRace(){
     ActivityGate gate(true);CHECK(gate.Closed()&&!gate.Active()&&!gate.TryEnter());gate.Open();
@@ -164,4 +186,4 @@ static void ActivityRace(){
     done=true;for(auto&t:workers)t.join();CHECK(!violation.load()&&!gate.Active()&&admitted.load()>=100);
     gate.Close();CHECK(!gate.TryEnter());
 }
-int main(){NominalAndCancellation();GameReadAcrossPartialWake();MinimumAwakeDrainsBeforeAck();DrainAndFailures();ActivityRace();std::printf("PASS %u PSC lifecycle and concurrent background gate checks\n",checks);return 0;}
+int main(){NominalAndCancellation();GameReadAcrossPartialWake();MinimumAwakeDrainsBeforeAck();DrainAndFailures();FailedWakeRecovery();ActivityRace();std::printf("PASS %u PSC lifecycle and concurrent background gate checks\n",checks);return 0;}

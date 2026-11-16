@@ -36,6 +36,8 @@ namespace ams::usb::storage {
     namespace {
 
         constexpr TimeSpan WorkerPollInterval = TimeSpan::FromMilliSeconds(500);
+        /* How long a failed eject stays visible to the panel before remounting. */
+        constexpr u64 EjectFailureHoldNs = 5000000000ULL;
         /* The public benchmark route targets one storage Service. Keep this
          * state outside Service so existing object layout stays unchanged.
          * Other Service instances cannot inherit this instance's suspension. */
@@ -437,6 +439,57 @@ namespace ams::usb::storage {
         this->SetState(State::Error,result);
         this->SetLastIoResult(result);
         this->RequestReconnect();
+    }
+
+    void Service::AllowFailedWakeRecovery() {
+        std::scoped_lock lk(m_power_mutex);
+        m_failed_wake_recovery_allowed = m_power_gate.GetPhase() == sleep::Phase::Failed;
+    }
+
+    void Service::DenyFailedWakeRecovery() {
+        std::scoped_lock lk(m_power_mutex);
+        m_failed_wake_recovery_allowed = false;
+    }
+
+    bool Service::IsRecoveredFromFailedWake() const {
+        std::scoped_lock lk(m_power_mutex);
+        return m_power_gate.GetPhase() == sleep::Phase::Awake && !m_resume_in_progress;
+    }
+
+    bool Service::TryRecoverFailedWake() {
+        /* A failed wake used to latch the gate for the whole boot, so the
+         * drive stayed unusable until reboot even after a replug. Once PSC
+         * reports FullAwake and nothing is admitted, discard the old device
+         * state and rediscover the drive exactly like a new hot-plug. The
+         * media generation advances, so handles opened before sleep fail
+         * instead of reaching a possibly different drive. */
+        const auto can_recover = [&]() {
+            return !m_stop_requested && m_running && m_failed_wake_recovery_allowed && !m_resume_in_progress &&
+                m_power_gate.GetPhase() == sleep::Phase::Failed && m_power_gate.Active() == 0;
+        };
+        {
+            std::scoped_lock lk(m_mutex);
+            std::scoped_lock power_lk(m_power_mutex);
+            if (!can_recover()) return false;
+        }
+        /* Lock order matches the rest of the service: volume, state, power. */
+        std::scoped_lock volume_lk(m_volume_mutex);
+        std::scoped_lock lk(m_mutex);
+        std::scoped_lock power_lk(m_power_mutex);
+        if (!can_recover()) return false;
+        m_device.Quarantine(); // Never flush pre-sleep dirty state into the rediscovered drive.
+        m_writable_ready = false;
+        m_checkpoint_valid = false;
+        m_checkpoint_pending = false;
+        if (!m_power_gate.Recover()) return false;
+        m_failed_wake_recovery_allowed = false;
+        if (!m_reconnect_requested) io_diagnostics::reconnect_requests.fetch_add(1, std::memory_order_relaxed);
+        m_reconnect_requested = true;
+        m_status.state = State::Starting;
+        m_status.writable = 0;
+        sleep_diagnostics::phase.store(static_cast<u32>(m_power_gate.GetPhase()));
+        m_power_cv.Broadcast();
+        return true;
     }
 
     Result Service::ResumeSystemSleep() {
@@ -1201,6 +1254,17 @@ namespace ams::usb::storage {
         {
             std::scoped_lock lk(m_mutex);
             if(!m_eject.Blocked()) return false;
+            if(m_eject.Get().phase==eject::Phase::Failed) {
+                // Keep the failure visible to the eject panel briefly, then
+                // remount from scratch instead of blocking the drive until
+                // reboot. A partly finalized volume is never reused.
+                if(impl::UsbNowNs()-m_eject_failed_ns < EjectFailureHoldNs) return true;
+                m_eject.RecoverFromFailure();
+                if (!m_reconnect_requested) io_diagnostics::reconnect_requests.fetch_add(1, std::memory_order_relaxed);
+                m_reconnect_requested=true;
+                m_status.state=State::Starting;
+                return false;
+            }
             if(m_eject.Get().phase!=eject::Phase::Pending) return true;
         }
         std::unique_lock volume_lock(m_volume_mutex,std::try_to_lock);
@@ -1211,6 +1275,7 @@ namespace ams::usb::storage {
             if(R_FAILED(rc)) {
                 std::scoped_lock lk(m_mutex);
                 m_eject.Fail(rc.GetValue());m_status.state=State::Error;m_status.last_result=rc.GetValue();
+                m_eject_failed_ns=impl::UsbNowNs();
             }
             return R_SUCCEEDED(rc);
         };
@@ -1294,6 +1359,7 @@ namespace ams::usb::storage {
             const auto admission = BeginSystemOperation();
             if (R_FAILED(admission)) {
                 if (this->ShouldStop()) break;
+                if (this->TryRecoverFailedWake()) continue;
                 os::SleepThread(WorkerPollInterval); continue;
             }
             ON_SCOPE_EXIT { EndSystemOperation(); };
@@ -1886,6 +1952,9 @@ namespace ams::usb::storage {
     Result Service::ReserveSystemWake() { R_SUCCEED(); }
     Result Service::ResumeSystemSleep() { R_SUCCEED(); }
     void Service::FailSystemPower(Result) { }
+    void Service::AllowFailedWakeRecovery() { }
+    void Service::DenyFailedWakeRecovery() { }
+    bool Service::IsRecoveredFromFailedWake() const { return false; }
     bool Service::IsSystemPowerPaused() const { return false; }
     bool Service::IsSystemPowerQuiescent() const { return true; }
 

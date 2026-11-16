@@ -131,9 +131,14 @@ struct Backend {
         if (g_failure_result.load(std::memory_order_acquire)) RestoreHardwareKeyCache();
         g_background.Open();
     }
+    void AllowStorageRecovery() { GetUsbContentStorageService()->AllowFailedWakeRecovery(); }
+    void DenyStorageRecovery() { GetUsbContentStorageService()->DenyFailedWakeRecovery(); }
+    bool IsStorageRecovered() const { return GetUsbContentStorageService()->IsRecoveredFromFailedWake(); }
     void FailStorage(u32 result) {
         g_failure_result.store(result);
         g_failures.fetch_add(1);
+        // Any new failure revokes an earlier FullAwake recovery permission.
+        GetUsbContentStorageService()->DenyFailedWakeRecovery();
         GetUsbContentStorageService()->FailSystemPower(Result(result));
         g_report_revision.fetch_add(1, std::memory_order_release);
     }

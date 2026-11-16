@@ -38,5 +38,12 @@ namespace ams::usb::eject {
             if(value.phase!=Phase::Safe) return false;
             value.phase=Phase::Online; value.stage=Stage::None; value.result=0; value.request=0; return true;
         }
+        // A failed eject used to stay Blocked() for the whole boot, so every
+        // later read/write returned ResourceBusy ("drive in use"). Return to
+        // Online for a full remount; the failure code stays visible.
+        bool RecoverFromFailure() {
+            if(value.phase!=Phase::Failed) return false;
+            value.phase=Phase::Online; value.stage=Stage::None; value.request=0; return true;
+        }
     };
 }

@@ -41,6 +41,14 @@ static void StopAndFailure(){
     Gate sleeping;CHECK(sleeping.BeginSleep()&&sleeping.Park()&&sleeping.BeginWake());sleeping.Fail();
     CHECK(!sleeping.CompleteWake()&&sleeping.Enter()==Admission::Rejected);CHECK(!sleeping.Restart());sleeping.Stop();CHECK(sleeping.Restart());
 }
+static void FailedWakeRecovery(){
+    Gate idle;CHECK(!idle.Recover()&&idle.GetPhase()==Phase::Awake);
+    Gate busy;CHECK(busy.Enter()==Admission::Entered);busy.Fail();CHECK(!busy.Recover()&&busy.GetPhase()==Phase::Failed);
+    CHECK(busy.Leave());CHECK(busy.Recover()&&busy.GetPhase()==Phase::Awake);CHECK(!busy.Recover());
+    CHECK(busy.Enter()==Admission::Entered&&busy.Leave());
+    CHECK(busy.BeginSleep()&&busy.Park());busy.Fail();CHECK(busy.Recover()&&busy.BeginSleep()&&busy.Park());
+    Gate stopped;stopped.Stop();stopped.Fail();CHECK(!stopped.Recover()&&stopped.GetPhase()==Phase::Stopped);
+}
 static void ReachableStateInvariants(){
     std::vector<Gate> pending(1);std::set<std::tuple<unsigned,unsigned>> seen;
     while(!pending.empty()){
@@ -89,7 +97,7 @@ static void NarrowSensePolicy(){
     const auto p=Sense(false,6,0x29,2);CHECK(ready.RetryReset(p.data(),p.size()));CHECK(!ready.RetryReset(p.data(),p.size()));
 }
 int main(){
-    DrainAndWake();StopAndFailure();ReachableStateInvariants();NarrowSensePolicy();
+    DrainAndWake();StopAndFailure();FailedWakeRecovery();ReachableStateInvariants();NarrowSensePolicy();
     CHECK(DrainBudgetNs==5000000000ULL&&ProbeBudgetNs==5000000000ULL);
     CHECK(Deadline(0,0)==0&&Deadline(1,2)==3&&Deadline(UINT64_MAX,1)==UINT64_MAX);
     CHECK(Deadline(UINT64_MAX-10,10)==UINT64_MAX&&Deadline(UINT64_MAX-9,10)==UINT64_MAX);

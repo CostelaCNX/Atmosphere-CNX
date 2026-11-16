@@ -90,7 +90,7 @@ def main():
     end = writable_source.index('\n    }', start)
     (out / 'actual_write_sleep_marker.hpp').write_text(writable_source[start:end])
     jobs = ['usb_sleep_transport_tests.cpp', 'usb_sleep_core_tests.cpp', 'usb_system_power_tests.cpp', 'usb_sleep_service_tests.cpp',
-            'usb_sleep_marker_tests.cpp']
+            'usb_sleep_marker_tests.cpp', 'usb_eject_gate_tests.cpp']
     missing = [name for name in jobs if not (project / 'tests/nexus-integration' / name).exists()]
     if missing:
         print('Pending independent fixtures:', ', '.join(missing))
@@ -102,6 +102,7 @@ def main():
                             library / 'include/stratosphere/usb/usb_reader_policy.hpp',
                             library / 'source/usb/usb_writable_volume.cpp',
                             library / 'include/stratosphere/usb/usb_sleep_core.hpp',
+                            library / 'include/stratosphere/usb/usb_eject.hpp',
                             library / 'include/stratosphere/usb/usb_sleep_diagnostics.hpp',
                             module / 'usb_system_power_core.hpp') if p.exists())
     pins = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in files}

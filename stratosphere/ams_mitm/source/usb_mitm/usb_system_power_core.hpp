@@ -45,12 +45,28 @@ public:
     }
     // Only the PSC watcher changes the coordinator. The recovery worker returns
     // its result through a mailbox; it never opens the background activity gate.
+    // The storage worker may leave its failed state once it was allowed at
+    // FullAwake. Track that here so the next sleep drains storage normally
+    // instead of acknowledging PSC while USB I/O is live again.
+    template<class Backend> void AdoptRecoveredStorage(Backend &backend) {
+        if (m_phase == Phase::Failed && backend.IsStorageRecovered()) {
+            m_phase = Phase::Awake;
+            m_failure = 0;
+        }
+    }
     template<class Backend> void PollWake(Backend &backend) {
+        AdoptRecoveredStorage(backend);
         if (m_phase != Phase::Resuming) return;
         std::uint32_t result{};
         if (!backend.TakeWakeResult(result)) return;
-        if (result) Fail(result, backend);
-        else m_phase = Phase::Awake;
+        if (result) {
+            Fail(result, backend);
+            // FullAwake was acknowledged before recovery started, so the
+            // worker may rediscover the drive as a fresh hot-plug.
+            backend.AllowStorageRecovery();
+        } else {
+            m_phase = Phase::Awake;
+        }
         // The awake request was already acknowledged before this job started.
         // Failed recovery permits only the existing SD-only diagnostic path.
         backend.OpenBackground();
@@ -67,9 +83,11 @@ public:
         if (m_phase == Phase::Failed) {
             if (state == 0) {
                 // SD-only failure reporting may restart after a known awake
-                // request. USB remains quarantined and is never retried here.
+                // request. USB is not retried here; after the ACK the storage
+                // worker is allowed to rediscover the drive as a new device.
                 open_after_ack = true;
             } else {
+                backend.DenyStorageRecovery();
                 backend.CloseBackground();
                 const auto drain = backend.DrainBackground();
                 if (drain) return {drain, false};
@@ -119,6 +137,7 @@ public:
             backend.StartRecovery();
         } else if (open_after_ack) {
             if (m_phase != Phase::Failed) m_phase = Phase::Awake;
+            else if (state == 0) backend.AllowStorageRecovery();
             backend.OpenBackground();
         }
         return {result, true};

@@ -47,6 +47,13 @@ namespace ams::usb::sleep {
             if (phase != Phase::Stopped || active) return false;
             phase = Phase::Awake; return true;
         }
+        /* Leave a failed wake only when nothing is admitted. The caller must
+         * have quarantined the old device and requested a full reconnect, so
+         * this behaves like a fresh hot-plug rather than a retried wake. */
+        bool Recover() {
+            if (phase != Phase::Failed || active) return false;
+            phase = Phase::Awake; return true;
+        }
     };
     constexpr std::uint64_t Deadline(std::uint64_t now, std::uint64_t budget) {
         return now > UINT64_MAX - budget ? UINT64_MAX : now + budget;

@@ -125,6 +125,7 @@ namespace ams::usb::storage {
             bool m_checkpoint_valid{};
             bool m_skip_checkpoint_on_next_mount{};
             bool m_resume_in_progress{};
+            bool m_failed_wake_recovery_allowed{}; // m_power_mutex; set only while fully awake.
             os::ThreadType m_thread{};
             alignas(os::ThreadStackAlignment) u8 m_thread_stack[ThreadStackSize]{};
             bool m_thread_created{false};
@@ -134,6 +135,7 @@ namespace ams::usb::storage {
             u64 m_media_generation{0};
             Status m_status{};
             eject::Gate m_eject{}; // m_mutex; no new threads or global waits.
+            u64 m_eject_failed_ns{}; // m_mutex; when the last eject attempt failed.
 
             host::Client m_client;
             mass_storage::Device m_device;
@@ -158,6 +160,11 @@ namespace ams::usb::storage {
             Result ReserveSystemWake();
             Result ResumeSystemSleep();
             void FailSystemPower(Result result);
+            /* Called by the PSC watcher: allow only at FullAwake, deny on any
+             * other power state. The worker performs the actual recovery. */
+            void AllowFailedWakeRecovery();
+            void DenyFailedWakeRecovery();
+            bool IsRecoveredFromFailedWake() const;
             bool IsSystemPowerPaused() const;
             bool IsSystemPowerQuiescent() const;
             Result GetStatus(Status *out) const;
@@ -199,6 +206,7 @@ namespace ams::usb::storage {
             Result VerifySleepMarker();
             Result RebindAfterSleep(const Status &saved, u64 deadline);
             void InvalidateFailedWake(Result result);
+            bool TryRecoverFailedWake(); // Worker only.
             void WorkerThread();
             bool ProcessEject(); // Worker only. Never called from FS/launch IPC.
             void RunIdleKeepAlive();
