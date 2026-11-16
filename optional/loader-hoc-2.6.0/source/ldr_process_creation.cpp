@@ -1,0 +1,1127 @@
+/*
+ * Copyright (c) Atmosphère-NX
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+#include <stratosphere.hpp>
+#include "ldr_capabilities.hpp"
+#include "ldr_content_management.hpp"
+#include "ldr_development_manager.hpp"
+#include "ldr_launch_record.hpp"
+#include "ldr_meta.hpp"
+#include "ldr_patcher.hpp"
+#include "ldr_qlaunch_compat.hpp"
+#include "ldr_process_creation.hpp"
+#include "ldr_ro_manager.hpp"
+#include "oc/oc_loader.hpp"
+
+namespace ams::ldr {
+
+    namespace hoc {
+
+        /* Diagnostic build only: zero disables all checkpoints. The packaging
+         * tool selects one stage and its complement in the deployed KIP. */
+        struct BootProbeConfig {
+            char magic[16];
+            u32 stage;
+            u32 stage_inverse;
+        };
+        volatile BootProbeConfig g_boot_probe_config = { "TR4U-HOC-PROBE1", 0, 0xFFFFFFFFu };
+
+        __attribute__((noinline)) bool IsPcvOverclockBypassSelected() {
+            constexpr char Magic[] = "TR4U-HOC-PROBE1";
+            for (size_t i = 0; i < sizeof(Magic); ++i) {
+                if (g_boot_probe_config.magic[i] != Magic[i]) {
+                    return false;
+                }
+            }
+            const u32 selected = g_boot_probe_config.stage;
+            return (selected >= 5 && selected <= 13) && g_boot_probe_config.stage_inverse == (selected ^ 0xFFFFFFFFu);
+        }
+
+        __attribute__((noinline)) bool IsPcvArenaBypassSelected() {
+            constexpr char Magic[] = "TR4U-HOC-PROBE1";
+            for (size_t i = 0; i < sizeof(Magic); ++i) {
+                if (g_boot_probe_config.magic[i] != Magic[i]) {
+                    return false;
+                }
+            }
+            const u32 selected = g_boot_probe_config.stage;
+            return selected == 6 && g_boot_probe_config.stage_inverse == (selected ^ 0xFFFFFFFFu);
+        }
+
+        __attribute__((noinline)) bool IsPcvDataArenaPermissionBypassSelected() {
+            constexpr char Magic[] = "TR4U-HOC-PROBE1";
+            for (size_t i = 0; i < sizeof(Magic); ++i) {
+                if (g_boot_probe_config.magic[i] != Magic[i]) {
+                    return false;
+                }
+            }
+            const u32 selected = g_boot_probe_config.stage;
+            return (selected == 7 || selected == 9 || selected == 10 || selected == 11) && g_boot_probe_config.stage_inverse == (selected ^ 0xFFFFFFFFu);
+        }
+
+        __attribute__((noinline)) bool IsPcvCodeArenaPermissionBypassSelected() {
+            constexpr char Magic[] = "TR4U-HOC-PROBE1";
+            for (size_t i = 0; i < sizeof(Magic); ++i) {
+                if (g_boot_probe_config.magic[i] != Magic[i]) {
+                    return false;
+                }
+            }
+            const u32 selected = g_boot_probe_config.stage;
+            return (selected == 7 || selected == 8) && g_boot_probe_config.stage_inverse == (selected ^ 0xFFFFFFFFu);
+        }
+
+        __attribute__((noinline)) bool IsPcvRxPermissionStatusProbeSelected() {
+            constexpr char Magic[] = "TR4U-HOC-PROBE1";
+            for (size_t i = 0; i < sizeof(Magic); ++i) {
+                if (g_boot_probe_config.magic[i] != Magic[i]) {
+                    return false;
+                }
+            }
+            const u32 selected = g_boot_probe_config.stage;
+            return selected == 10 && g_boot_probe_config.stage_inverse == (selected ^ 0xFFFFFFFFu);
+        }
+
+        __attribute__((noinline)) bool IsPcvLoaderCompletionProbeSelected() {
+            constexpr char Magic[] = "TR4U-HOC-PROBE1";
+            for (size_t i = 0; i < sizeof(Magic); ++i) {
+                if (g_boot_probe_config.magic[i] != Magic[i]) {
+                    return false;
+                }
+            }
+            const u32 selected = g_boot_probe_config.stage;
+            return selected == 11 && g_boot_probe_config.stage_inverse == (selected ^ 0xFFFFFFFFu);
+        }
+
+        __attribute__((noinline)) void BootProbe(u32 stage) {
+            const u32 selected = g_boot_probe_config.stage;
+            if (selected == 0 || selected > 4 || stage != selected ||
+                g_boot_probe_config.stage_inverse != (selected ^ 0xFFFFFFFFu)) {
+                return;
+            }
+
+            /* These checkpoints deliberately stop boot via the r4 Exosphere
+             * error display. They require no SD access and do not resume. */
+            constexpr u32 Colors[] = { 0xFF0, 0x0F0, 0x00F, 0xFFF };
+            panic::SmcError(Colors[selected - 1]);
+            CRASH("TR4U diagnostic boot checkpoint");
+        }
+
+    }
+
+    namespace {
+
+        /* Convenience defines. */
+        constexpr size_t SystemResourceSizeMax = 0x1FE00000;
+        constexpr size_t AutoLoadModuleSizeMax = 0x800000000;
+
+        /* Types. */
+        enum NsoIndex {
+            Nso_Rtld    =  0,
+            Nso_Main    =  1,
+            Nso_Wkc0    =  2,
+            Nso_Wkc1    =  3,
+            Nso_Wkc2    =  4,
+            Nso_Wkc3    =  5,
+            Nso_Wkc4    =  6,
+            Nso_Wkc5    =  7,
+            Nso_Wkc6    =  8,
+            Nso_Wkc7    =  9,
+            Nso_Wkc8    = 10,
+            Nso_Wkc9    = 11,
+            Nso_SubSdk0 = 12,
+            Nso_SubSdk1 = 13,
+            Nso_SubSdk2 = 14,
+            Nso_SubSdk3 = 15,
+            Nso_SubSdk4 = 16,
+            Nso_SubSdk5 = 17,
+            Nso_SubSdk6 = 18,
+            Nso_SubSdk7 = 19,
+            Nso_SubSdk8 = 20,
+            Nso_SubSdk9 = 21,
+            Nso_Sdk     = 22,
+            Nso_Count,
+        };
+
+        constexpr inline const char *NsoPaths[Nso_Count] = {
+            ENCODE_ATMOSPHERE_CODE_PATH("/rtld"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/main"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc0"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc1"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc2"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc3"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc4"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc5"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc6"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc7"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc8"),
+            ENCODE_ATMOSPHERE_BDLL_PATH("/wkc9"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk0"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk1"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk2"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk3"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk4"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk5"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk6"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk7"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk8"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/subsdk9"),
+            ENCODE_ATMOSPHERE_CODE_PATH("/sdk"),
+        };
+
+        constexpr const char *GetNsoPath(size_t idx) {
+            AMS_ABORT_UNLESS(idx < Nso_Count);
+            return NsoPaths[idx];
+        }
+
+        struct ProcessInfo {
+            os::NativeHandle process_handle;
+            uintptr_t code_address;
+            size_t    total_size;
+            uintptr_t args_address;
+            size_t    args_size;
+            uintptr_t nso_address[Nso_Count];
+            size_t    nso_size[Nso_Count];
+        };
+
+        struct AutoLoadModuleInfo {
+            bool has_rtld;
+            bool has_main;
+            bool has_sdk;
+            bool has_subsdk;
+            s8   nso_indices[Nso_Count];
+        };
+
+        struct AutoLoadModuleContext {
+            NsoHeader *headers;
+            int        nso_count;
+            int        rtld_idx;
+            int        main_nso_idx;
+            int        sdk_nso_idx;
+            AutoLoadModuleInfo ali;
+        };
+
+        /* Global NSO header cache. */
+        NsoHeader g_nso_headers[Nso_Count];
+
+        /* Pcv/Ptm/NvServices check cache. */
+        bool g_is_pcv;
+        bool g_is_ptm;
+        bool g_is_nvsrv;
+
+        /* Global Zstd decompression context. */
+        alignas(8) u8 g_zstd_dctx_workspace[util::DecompressZstdWithBicWorkBufferSizeDefault];
+
+        Result ValidateProgramVersion(ncm::ProgramId program_id, u32 version) {
+            /* No version verification is done before 8.1.0. */
+            R_SUCCEED_IF(hos::GetVersion() < hos::Version_8_1_0);
+
+            /* No verification is done if development. */
+            R_SUCCEED_IF(IsDevelopmentForAntiDowngradeCheck());
+
+            /* TODO: Anti-downgrade checking does not make very much sense for us. Should we do anything? */
+            AMS_UNUSED(program_id, version);
+
+            R_SUCCEED();
+        }
+
+        /* Helpers. */
+        Result GetProgramInfoFromMeta(ProgramInfo *out, const Meta *meta) {
+            /* Copy basic info. */
+            out->main_thread_priority   = meta->npdm->main_thread_priority;
+            out->default_cpu_id         = meta->npdm->default_cpu_id;
+            out->main_thread_stack_size = meta->npdm->main_thread_stack_size;
+            out->program_id             = meta->aci->program_id;
+
+            /* Copy access controls. */
+            size_t offset = 0;
+#define COPY_ACCESS_CONTROL(source, which) \
+            ({ \
+                const size_t size = meta->source->which##_size; \
+                R_UNLESS(offset + size <= sizeof(out->ac_buffer), ldr::ResultInternalError()); \
+                out->source##_##which##_size = size; \
+                std::memcpy(out->ac_buffer + offset, meta->source##_##which, size); \
+                offset += size; \
+            })
+
+            /* Copy all access controls to buffer. */
+            COPY_ACCESS_CONTROL(acid, sac);
+            COPY_ACCESS_CONTROL(aci, sac);
+            COPY_ACCESS_CONTROL(acid, fac);
+            COPY_ACCESS_CONTROL(aci, fah);
+#undef COPY_ACCESS_CONTROL
+
+            /* Copy flags. */
+            out->flags = MakeProgramInfoFlag(static_cast<const util::BitPack32 *>(meta->aci_kac), meta->aci->kac_size / sizeof(util::BitPack32));
+            R_SUCCEED();
+        }
+
+        bool IsApplet(const Meta *meta) {
+            return (MakeProgramInfoFlag(static_cast<const util::BitPack32 *>(meta->aci_kac), meta->aci->kac_size / sizeof(util::BitPack32)) & ProgramInfoFlag_ApplicationTypeMask) == ProgramInfoFlag_Applet;
+        }
+
+        bool IsApplication(const Meta *meta) {
+            return (MakeProgramInfoFlag(static_cast<const util::BitPack32 *>(meta->aci_kac), meta->aci->kac_size / sizeof(util::BitPack32)) & ProgramInfoFlag_ApplicationTypeMask) == ProgramInfoFlag_Application;
+        }
+
+        Npdm::ProcessAddressSpace GetProcessAddressSpace(const Meta *meta) {
+            return static_cast<Npdm::ProcessAddressSpace>((meta->npdm->flags0 & Npdm::MetaFlag0_ProcessAddressSpaceMask) >> Npdm::MetaFlag0_ProcessAddressSpaceShift);
+        }
+
+        Acid::PoolPartition GetPoolPartition(const Meta *meta) {
+            return static_cast<Acid::PoolPartition>((meta->acid->flags & Acid::AcidFlag_PoolPartitionMask) >> Acid::AcidFlag_PoolPartitionShift);
+        }
+
+        Result LoadAutoLoadHeaders(AutoLoadModuleContext &ctx, u32 acid_flags) {
+            /* Clear NSOs. */
+            std::memset(g_nso_headers, 0, sizeof(g_nso_headers));
+            ctx.headers      = g_nso_headers;
+            ctx.nso_count    = 0;
+            ctx.rtld_idx     = -1;
+            ctx.main_nso_idx = -1;
+            ctx.sdk_nso_idx  = -1;
+            ctx.ali          = {};
+
+            for (size_t i = 0; i < Nso_Count; i++) {
+                /* Only load browser DLLs if acid flags say to do so. */
+                switch (i) {
+                    case Nso_Wkc0:
+                    case Nso_Wkc1:
+                    case Nso_Wkc2:
+                    case Nso_Wkc3:
+                    case Nso_Wkc4:
+                    case Nso_Wkc5:
+                    case Nso_Wkc6:
+                    case Nso_Wkc7:
+                    case Nso_Wkc8:
+                    case Nso_Wkc9:
+                        if ((acid_flags & Acid::AcidFlag_LoadBrowserCoreDll) == 0) {
+                            continue;
+                        }
+                        break;
+                }
+
+                fs::FileHandle file;
+                if (R_SUCCEEDED(fs::OpenFile(std::addressof(file), GetNsoPath(i), fs::OpenMode_Read))) {
+                    ON_SCOPE_EXIT { fs::CloseFile(file); };
+
+                    /* Read NSO header. */
+                    size_t read_size;
+                    R_TRY(fs::ReadFile(std::addressof(read_size), file, 0, g_nso_headers + ctx.nso_count, sizeof(NsoHeader)));
+                    R_UNLESS_LOG(read_size == sizeof(NsoHeader), ldr::ResultInvalidNso(), "[ldr] NSO header truncated!\n");
+
+                    /* Note nso is present. */
+                    switch (i) {
+                        case Nso_Rtld:
+                            ctx.rtld_idx = ctx.nso_count;
+                            ctx.ali.has_rtld = true;
+                            break;
+                        case Nso_Main:
+                            ctx.main_nso_idx = ctx.nso_count;
+                            ctx.ali.has_main = true;
+                            break;
+                        case Nso_SubSdk0:
+                        case Nso_SubSdk1:
+                        case Nso_SubSdk2:
+                        case Nso_SubSdk3:
+                        case Nso_SubSdk4:
+                        case Nso_SubSdk5:
+                        case Nso_SubSdk6:
+                        case Nso_SubSdk7:
+                        case Nso_SubSdk8:
+                        case Nso_SubSdk9:
+                            ctx.ali.has_subsdk = true;
+                            break;
+                        case Nso_Sdk:
+                            ctx.sdk_nso_idx = ctx.nso_count;
+                            ctx.ali.has_sdk = true;
+                            break;
+                    }
+                    ctx.ali.nso_indices[ctx.nso_count] = static_cast<s8>(i);
+                    ctx.nso_count++;
+                }
+            }
+
+            R_SUCCEED();
+        }
+
+        Result CheckAutoLoad(const AutoLoadModuleContext &ctx, u32 acid_flags) {
+            /* We must always have a main. */
+            R_UNLESS_LOG(ctx.ali.has_main, ldr::ResultInvalidNso(), "[ldr] Missing main!\n");
+
+            /* Validate flags and extents for all present NSOs. */
+            for (int i = 0; i < ctx.nso_count; ++i) {
+                const auto &hdr = ctx.headers[i];
+
+                /* All NSOs must not be --X. */
+                /* This is "probably" not checked on Ounce? */
+                R_UNLESS_LOG((hdr.flags & NsoHeader::Flag_PreventCodeReads) == 0, ldr::ResultInvalidNso(), "[ldr] NSO[%d] --x not allowed!\n", i);
+
+                /* Zstd compression only allowed on main, and only when both rtld+sdk are present. */
+                if (i != ctx.main_nso_idx || ctx.rtld_idx < 0 || ctx.sdk_nso_idx < 0) {
+                    R_UNLESS_LOG((hdr.flags & NsoHeader::Flag_UseZbicCompression) == 0, ldr::ResultInvalidNso(), "[ldr] NSO[%d] zbic not allowed!\n", i);
+                }
+
+                /* NSOs must have page-aligned segments. */
+                R_UNLESS(util::IsAligned(hdr.text_dst_offset, os::MemoryPageSize), ldr::ResultInvalidNso());
+                R_UNLESS(util::IsAligned(hdr.ro_dst_offset,   os::MemoryPageSize), ldr::ResultInvalidNso());
+                R_UNLESS(util::IsAligned(hdr.rw_dst_offset,   os::MemoryPageSize), ldr::ResultInvalidNso());
+
+                /* NSOs must have zero text offset. */
+                R_UNLESS(hdr.text_dst_offset == 0, ldr::ResultInvalidNso());
+
+                /* NSO .text must precede .rodata. */
+                const size_t text_end = static_cast<size_t>(hdr.text_dst_offset) + static_cast<size_t>(hdr.text_size);
+                R_UNLESS(text_end <= static_cast<size_t>(hdr.ro_dst_offset), ldr::ResultInvalidNso());
+
+                /* NSO .rodata must precede .rwdata. */
+                const size_t ro_end = static_cast<size_t>(hdr.ro_dst_offset) + static_cast<size_t>(hdr.ro_size);
+                R_UNLESS(ro_end <= static_cast<size_t>(hdr.rw_dst_offset), ldr::ResultInvalidNso());
+            }
+
+            const bool has_browser_dll = (acid_flags & Acid::AcidFlag_LoadBrowserCoreDll) != 0;
+            if (ctx.ali.has_rtld || ctx.ali.has_sdk) {
+                /* If we have sdk we must have rtld. */
+                R_UNLESS_LOG(ctx.ali.has_rtld, ldr::ResultInvalidNso(), "[ldr] Missing rtld!\n");
+
+                /* If we have rtld, we must not have browser core dll. */
+                R_UNLESS_LOG(!has_browser_dll, ldr::ResultInvalidNso(), "[ldr] BrowserCoreDll must not be present!\n");
+            } else {
+                /* We must not have both subsdk and browser dll. */
+                R_UNLESS_LOG(!(ctx.ali.has_subsdk && has_browser_dll), ldr::ResultInvalidNso(), "[ldr] Can't have both subsdk and BrowserCoreDll!\n");
+            }
+
+            R_SUCCEED();
+        }
+
+        constexpr const ncm::ProgramId UnqualifiedApprovalProgramIds[] = {
+            { 0x010003F003A34000 }, /* Pokemon: Let's Go, Pikachu! */
+            { 0x0100152000022000 }, /* Mario Kart 8 Deluxe */
+            { 0x0100165003504000 }, /* Nintendo Labo Toy-Con 04: VR Kit */
+            { 0x0100187003A36000 }, /* Pokemon: Let's Go, Eevee! */
+            { 0x01002E5008C56000 }, /* Pokemon Sword [Live Tournament] */
+            { 0x01002FF008C24000 }, /* Ring Fit Adventure */
+            { 0x010049900F546001 }, /* Super Mario 3D All-Stars: Super Mario 64 */
+            { 0x010057D00ECE4000 }, /* Nintendo Switch Online (Nintendo 64) [for Japan] */
+            { 0x01006F8002326000 }, /* Animal Crossing: New Horizons */
+            { 0x01006FB00F50E000 }, /* 宝可梦 走吧！伊布 [Pokemon: Let's Go, Eevee! for China] */
+            { 0x010070300F50C000 }, /* 宝可梦 走吧！皮卡丘 [Pokemon: Let's Go, Pikachu! for China] */
+            { 0x010075100E8EC000 }, /* 马力欧卡丁车8 豪华版 [Mario Kart 8 Deluxe for China] */
+            { 0x01008DB008C2C000 }, /* Pokemon Shield */
+            { 0x01009AD008C4C000 }, /* Pokemon: Let's Go, Pikachu! [Kiosk] */
+            { 0x0100A66003384000 }, /* Hulu */
+            { 0x0100ABF008968000 }, /* Pokemon Sword */
+            { 0x0100C9A00ECE6000 }, /* Nintendo Switch Online (Nintendo 64) [for America] */
+            { 0x0100ED100BA3A000 }, /* Mario Kart Live: Home Circuit */
+            { 0x0100F38011CFE000 }, /* Animal Crossing: New Horizons Island Transfer Tool */
+            { 0x0100F6B011028000 }, /* 健身环大冒险 [Ring Fit Adventure for China] */
+        };
+
+        /* Check that the unqualified approval programs are sorted. */
+        static_assert([]() -> bool {
+            for (size_t i = 0; i < util::size(UnqualifiedApprovalProgramIds) - 1; ++i) {
+                if (UnqualifiedApprovalProgramIds[i].value >= UnqualifiedApprovalProgramIds[i + 1].value) {
+                    return false;
+                }
+            }
+
+            return true;
+        }());
+
+        bool IsUnqualifiedApprovalProgramId(ncm::ProgramId program_id) {
+            /* Check if the program id is one with unqualified approval. */
+            return std::binary_search(std::begin(UnqualifiedApprovalProgramIds), std::end(UnqualifiedApprovalProgramIds), program_id);
+        }
+
+        bool IsUnqualifiedApproval(const Meta *meta) {
+            /* If the meta has unqualified approval flag, it's unqualified approval. */
+            if (meta->acid->flags & ldr::Acid::AcidFlag_UnqualifiedApproval) {
+                return true;
+            }
+
+            /* If the unqualified approval flag is not set, the program must be an application. */
+            if (!IsApplication(meta)) {
+                return false;
+            }
+
+            /* The program id must be a force unqualified approval program id. */
+            return IsUnqualifiedApprovalProgramId(meta->acid->program_id_min) && meta->acid->program_id_min == meta->acid->program_id_max;
+        }
+
+        Result ValidateMeta(const Meta *meta, const ncm::ProgramLocation &loc, const fs::CodeVerificationData &code_verification_data) {
+            /* Validate version. */
+            R_TRY(ValidateProgramVersion(loc.program_id, meta->npdm->version));
+
+            /* Validate program id. */
+            R_UNLESS(meta->aci->program_id >= meta->acid->program_id_min, ldr::ResultInvalidProgramId());
+            R_UNLESS(meta->aci->program_id <= meta->acid->program_id_max, ldr::ResultInvalidProgramId());
+
+            /* Validate the kernel capabilities. */
+            R_TRY(TestCapability(static_cast<const util::BitPack32 *>(meta->acid_kac), meta->acid->kac_size / sizeof(util::BitPack32), static_cast<const util::BitPack32 *>(meta->aci_kac), meta->aci->kac_size / sizeof(util::BitPack32)));
+
+            /* Check if the NCA is PCV, PTM, or NvServices. */
+            g_is_pcv  = meta->aci->program_id == ncm::SystemProgramId::Pcv;
+            g_is_ptm = meta->aci->program_id == ncm::SystemProgramId::Ptm;
+            g_is_nvsrv = meta->aci->program_id == ncm::SystemProgramId::NvServices;
+
+            /* If we have data to validate, validate it. */
+            if (meta->check_verification_data) {
+                const u8 *sig         = code_verification_data.signature;
+                const size_t sig_size = sizeof(code_verification_data.signature);
+                const u8 *mod         = static_cast<u8 *>(meta->modulus);
+                const size_t mod_size = crypto::Rsa2048PssSha256Verifier::ModulusSize;
+                const u8 *exp         = fssystem::GetAcidSignatureKeyPublicExponent();
+                const size_t exp_size = fssystem::AcidSignatureKeyPublicExponentSize;
+                const u8 *hsh         = code_verification_data.target_hash;
+                const size_t hsh_size = sizeof(code_verification_data.target_hash);
+                const bool is_signature_valid = crypto::VerifyRsa2048PssSha256WithHash(sig, sig_size, mod, mod_size, exp, exp_size, hsh, hsh_size);
+
+                /* If the signature check fails, we need to check if this is allowable. */
+                if (!is_signature_valid) {
+                    AMS_LOG("[ldr] invalid signature!\n");
+
+                    /* We have to enforce signature checks on prod and when we have a signature to check on dev. */
+                    R_UNLESS(IsDevelopmentForAcidProductionCheck(), ldr::ResultInvalidNcaSignature());
+                    R_UNLESS(!code_verification_data.has_data,      ldr::ResultInvalidNcaSignature());
+
+                    /* There was no signature to check on dev. Check if this is acceptable. */
+                    R_UNLESS(IsUnqualifiedApproval(meta), ldr::ResultInvalidNcaSignature());
+                }
+            }
+
+            /* All good. */
+            R_SUCCEED();
+        }
+
+        Result GetCreateProcessParameterFlags(u32 *out, const Meta *meta, const u32 ldr_flags) {
+            const u8 meta_flags0 = meta->npdm->flags0;
+            const u8 meta_flags1 = meta->npdm->flags1;
+
+            u32 flags = 0;
+
+            /* Set Is64Bit. */
+            if (meta_flags0 & Npdm::MetaFlag0_Is64BitInstruction) {
+                flags |= svc::CreateProcessParameterFlag_64Bit;
+            }
+
+            /* Set ProcessAddressSpace. */
+            switch (GetProcessAddressSpace(meta)) {
+                case Npdm::ProcessAddressSpace_32Bit:
+                    flags |= svc::CreateProcessParameterFlag_AddressSpace32Bit;
+                    break;
+                case Npdm::ProcessAddressSpace_64Bit36:
+                    flags |= svc::CreateProcessParameterFlag_AddressSpace64Bit36;
+                    break;
+                case Npdm::ProcessAddressSpace_32BitNoReserved:
+                    flags |= svc::CreateProcessParameterFlag_AddressSpace32BitNoReserved;
+                    break;
+                case Npdm::ProcessAddressSpace_64Bit39:
+                    flags |= svc::CreateProcessParameterFlag_AddressSpace64Bit39;
+                    break;
+                case Npdm::ProcessAddressSpace_64Bit42:
+                    flags |= svc::CreateProcessParameterFlag_AddressSpace64Bit42;
+                    break;
+                default:
+                    R_THROW(ldr::ResultInvalidMeta());
+            }
+
+            /* Set Enable Debug. */
+            if (ldr_flags & CreateProcessParameterFlag_EnableJitDebug) {
+                flags |= svc::CreateProcessParameterFlag_EnableJitDebug;
+            }
+
+            /* Set Enable ASLR. */
+            if (!(ldr_flags & CreateProcessParameterFlag_DisableAslr)) {
+                flags |= svc::CreateProcessParameterFlag_EnableAslr;
+            }
+
+            /* Set Is Application. */
+            if (IsApplication(meta)) {
+                flags |= svc::CreateProcessParameterFlag_IsApplication;
+
+                /* 7.0.0+: Set OptimizeMemoryAllocation if relevant. */
+                if (hos::GetVersion() >= hos::Version_7_0_0) {
+                    if (meta_flags0 & Npdm::MetaFlag0_OptimizeMemoryAllocation) {
+                        flags |= svc::CreateProcessParameterFlag_OptimizeMemoryAllocation;
+                    }
+                }
+            }
+
+            /* 5.0.0+ Set Pool Partition. */
+            if (hos::GetVersion() >= hos::Version_5_0_0) {
+                /* TODO: Nintendo no longer accepts Applet when pool partition == application. Would this break hbl/anything else in the hb ecosystem? */
+                /* TODO: Nintendo uses a helper bool MakeSvcPoolPartitionFlag(u32 *out, Acid::PoolPartition partition); */
+                switch (GetPoolPartition(meta)) {
+                    case Acid::PoolPartition_Application:
+                        if (IsApplet(meta)) {
+                            flags |= svc::CreateProcessParameterFlag_PoolPartitionApplet;
+                        } else {
+                            flags |= svc::CreateProcessParameterFlag_PoolPartitionApplication;
+                        }
+                        break;
+                    case Acid::PoolPartition_Applet:
+                        flags |= svc::CreateProcessParameterFlag_PoolPartitionApplet;
+                        break;
+                    case Acid::PoolPartition_System:
+                        flags |= svc::CreateProcessParameterFlag_PoolPartitionSystem;
+                        break;
+                    case Acid::PoolPartition_SystemNonSecure:
+                        flags |= svc::CreateProcessParameterFlag_PoolPartitionSystemNonSecure;
+                        break;
+                    default:
+                        R_THROW(ldr::ResultInvalidMeta());
+                }
+            } else if (hos::GetVersion() >= hos::Version_4_0_0) {
+                /* On 4.0.0+, the corresponding bit was simply "UseSecureMemory". */
+                if (meta->acid->flags & Acid::AcidFlag_DeprecatedUseSecureMemory) {
+                    flags |= svc::CreateProcessParameterFlag_DeprecatedUseSecureMemory;
+                }
+            }
+
+            /* 11.0.0+/meso Set Disable DAS Merge. */
+            if (meta_flags0 & Npdm::MetaFlag0_DisableDeviceAddressSpaceMerge) {
+                flags |= svc::CreateProcessParameterFlag_DisableDeviceAddressSpaceMerge;
+            }
+
+            /* 18.0.0+/meso Set Enable Address Sanitizer . */
+            if (meta_flags0 & Npdm::MetaFlag0_EnableAddressSanitizer) {
+                flags |= svc::CreateProcessParameterFlag_EnableAddressSanitizer;
+            }
+            
+            /* 23.0.0+/meso Set Enable Shadow Stack. */
+            if (meta_flags1 & Npdm::MetaFlag1_EnableShadowStack) {
+                flags |= svc::CreateProcessParameterFlag_EnableShadowStack;
+            }
+
+            *out = flags;
+            R_SUCCEED();
+        }
+
+        Result GetCreateProcessParameter(svc::CreateProcessParameter *out, const Meta *meta, u32 flags, os::NativeHandle resource_limit) {
+            /* Clear output. */
+            std::memset(out, 0, sizeof(*out));
+
+            /* Set name, version, program id, resource limit handle. */
+            std::memcpy(out->name, meta->npdm->program_name, sizeof(out->name) - 1);
+            out->version    = meta->npdm->version;
+            out->program_id = meta->aci->program_id.value;
+            out->reslimit   = resource_limit;
+
+            /* Set flags. */
+            R_TRY(GetCreateProcessParameterFlags(std::addressof(out->flags), meta, flags));
+
+            /* 3.0.0+ System Resource Size. */
+            if (hos::GetVersion() >= hos::Version_3_0_0) {
+                /* Validate size is aligned. */
+                R_UNLESS(util::IsAligned(meta->npdm->system_resource_size, os::MemoryBlockUnitSize), ldr::ResultInvalidSize());
+
+                /* Validate system resource usage. */
+                if (meta->npdm->system_resource_size) {
+                    /* Process must be 64-bit. */
+                    R_UNLESS((out->flags & svc::CreateProcessParameterFlag_AddressSpace64Bit39), ldr::ResultInvalidMeta());
+
+                    /* Process must be application or applet. */
+                    R_UNLESS(IsApplication(meta) || IsApplet(meta), ldr::ResultInvalidMeta());
+
+                    /* Size must be less than or equal to max. */
+                    R_UNLESS(meta->npdm->system_resource_size <= SystemResourceSizeMax, ldr::ResultInvalidMeta());
+                }
+                out->system_resource_num_pages = meta->npdm->system_resource_size >> 12;
+            }
+
+            R_SUCCEED();
+        }
+
+        u64 GenerateSecureRandom(u64 max) {
+            /* Generate a cryptographically random number. */
+            u64 rand;
+            crypto::GenerateCryptographicallyRandomBytes(std::addressof(rand), sizeof(rand));
+
+            /* Coerce into range. */
+            return rand % (max + 1);
+        }
+
+        Result DecideAddressSpaceLayout(ProcessInfo *out, svc::CreateProcessParameter *out_param, const AutoLoadModuleContext &ctx, const ArgumentStore::Entry *argument) {
+            /* Clear output. */
+            out->args_address = 0;
+            out->args_size = 0;
+            std::memset(out->nso_address, 0, sizeof(out->nso_address));
+            std::memset(out->nso_size, 0, sizeof(out->nso_size));
+
+            size_t total_size = 0;
+            bool argument_allocated = false;
+
+            /* Calculate base offsets. */
+            for (int i = 0; i < ctx.nso_count; i++) {
+                out->nso_address[i] = total_size;
+                const size_t text_end = static_cast<size_t>(ctx.headers[i].text_dst_offset) + static_cast<size_t>(ctx.headers[i].text_size);
+                const size_t ro_end   = static_cast<size_t>(ctx.headers[i].ro_dst_offset)   + static_cast<size_t>(ctx.headers[i].ro_size);
+                const size_t rw_end   = static_cast<size_t>(ctx.headers[i].rw_dst_offset)   + static_cast<size_t>(ctx.headers[i].rw_size);
+                out->nso_size[i] = text_end;
+                out->nso_size[i] = std::max(out->nso_size[i], ro_end);
+                out->nso_size[i] = std::max(out->nso_size[i], rw_end);
+                out->nso_size[i] += static_cast<size_t>(ctx.headers[i].bss_size);
+
+                /* Reserve hook arena memory past PCV's BSS. */
+                if (g_is_pcv && i == ctx.main_nso_idx && !hoc::IsPcvArenaBypassSelected()) {
+                    out->nso_size[i] = util::AlignUp(out->nso_size[i], os::MemoryPageSize) + hoc::pcv::PcvArenaSize;
+                }
+
+                const size_t aligned_up_size = util::AlignUp(out->nso_size[i], os::MemoryPageSize) & (AutoLoadModuleSizeMax - 1);
+                R_UNLESS(out->nso_size[i] <= aligned_up_size, ldr::ResultInvalidNso());
+                R_UNLESS(aligned_up_size > 0,                 ldr::ResultInvalidNso());
+
+                out->nso_size[i] = aligned_up_size;
+
+                R_UNLESS(util::CanAddWithoutOverflow(total_size, out->nso_size[i]), ldr::ResultInvalidNso());
+                total_size += out->nso_size[i];
+
+                if (!argument_allocated && argument != nullptr) {
+                    out->args_address = total_size;
+                    out->args_size    = util::AlignUp(2 * sizeof(u32) + argument->argument_size * 2 + ArgumentStore::ArgumentBufferSize, os::MemoryPageSize);
+
+                    R_UNLESS(util::CanAddWithoutOverflow(total_size, out->args_size), ldr::ResultInvalidNso());
+                    total_size += out->args_size;
+
+                    argument_allocated = true;
+                }
+            }
+
+            /* Calculate ASLR. */
+            uintptr_t aslr_start = 0;
+            size_t aslr_size     = 0;
+            if (hos::GetVersion() >= hos::Version_2_0_0) {
+                switch (out_param->flags & svc::CreateProcessParameterFlag_AddressSpaceMask) {
+                    case svc::CreateProcessParameterFlag_AddressSpace32Bit:
+                    case svc::CreateProcessParameterFlag_AddressSpace32BitNoReserved:
+                        aslr_start = svc::AddressSmallMap32Start;
+                        aslr_size  = svc::AddressSmallMap32Size;
+                        break;
+                    case svc::CreateProcessParameterFlag_AddressSpace64Bit36:
+                        aslr_start = svc::AddressSmallMap36Start;
+                        aslr_size  = svc::AddressSmallMap36Size;
+                        break;
+                    case svc::CreateProcessParameterFlag_AddressSpace64Bit39:
+                        aslr_start = svc::AddressMap39Start;
+                        aslr_size  = svc::AddressMap39Size;
+                        break;
+                    case svc::CreateProcessParameterFlag_AddressSpace64Bit42:
+                        aslr_start = svc::AddressMap42Start;
+                        aslr_size  = svc::AddressMap42Size;
+                        break;
+                    AMS_UNREACHABLE_DEFAULT_CASE();
+                }
+            } else {
+                /* On 1.0.0, only 2 address space types existed. */
+                if (out_param->flags & svc::CreateProcessParameterFlag_AddressSpace64Bit36) {
+                    aslr_start = svc::AddressSmallMap36Start;
+                    aslr_size  = svc::AddressSmallMap36Size;
+                } else {
+                    aslr_start = svc::AddressSmallMap32Start;
+                    aslr_size  = svc::AddressSmallMap32Size;
+                }
+            }
+            R_UNLESS(total_size <= aslr_size, svc::ResultOutOfMemory());
+
+            /* Set Create Process output. */
+            uintptr_t aslr_slide = 0;
+            size_t free_size     = (aslr_size - total_size);
+            if (out_param->flags & svc::CreateProcessParameterFlag_EnableAslr) {
+                aslr_slide = GenerateSecureRandom(free_size / os::MemoryBlockUnitSize) * os::MemoryBlockUnitSize;
+            }
+
+            /* Set out. */
+            aslr_start += aslr_slide;
+            for (int i = 0; i < ctx.nso_count; i++) {
+                R_UNLESS(util::CanAddWithoutOverflow(out->nso_address[i], aslr_start), ldr::ResultInvalidNso());
+                out->nso_address[i] += aslr_start;
+            }
+            if (out->args_address) {
+                R_UNLESS(util::CanAddWithoutOverflow(out->args_address, aslr_start), ldr::ResultInvalidNso());
+                out->args_address += aslr_start;
+            }
+
+            out_param->code_address   = aslr_start;
+            out_param->code_num_pages = total_size >> 12;
+            out->total_size = total_size;
+
+            R_SUCCEED();
+        }
+
+        Result LoadAutoLoadModuleSegment(fs::FileHandle file, size_t file_offset, size_t compressed_size, size_t segment_size, bool is_compressed, bool is_zbic, uintptr_t map_base, uintptr_t map_end) {
+            /* Select read size based on compression. */
+            size_t file_size = is_compressed ? compressed_size : segment_size;
+
+            AMS_LOG("[ldr] Loading segment @ 0x%016lx: compressed=%d, file_size=0x%08lx, compressed_size=0x%08lx, segment_size=0x%08lx\n",
+                    map_base, is_compressed, file_size, compressed_size, segment_size);
+
+            /* Validate size. */
+            R_UNLESS(file_size <= segment_size,                       ldr::ResultInvalidNso());
+            R_UNLESS(file_size    <= std::numeric_limits<s32>::max(), ldr::ResultInvalidNso());
+            R_UNLESS(segment_size <= std::numeric_limits<s32>::max(), ldr::ResultInvalidNso());
+
+            /* Load data from file. */
+            uintptr_t load_address = is_compressed ? map_end - compressed_size : map_base;
+            size_t read_size;
+            R_TRY(fs::ReadFile(std::addressof(read_size), file, file_offset, reinterpret_cast<void *>(load_address), file_size));
+            R_UNLESS_LOG(read_size == file_size, ldr::ResultInvalidNso(), "[ldr] Couldn't read segment from file!\n");
+
+            /* Uncompress if necessary. */
+            R_SUCCEED_IF(!is_compressed);
+
+            auto compressed_data_buf = reinterpret_cast<const void *>(load_address);
+
+            if (is_zbic) {
+                bool decompressed = util::DecompressZstdWithBic(reinterpret_cast<void *>(g_zstd_dctx_workspace), sizeof(g_zstd_dctx_workspace), reinterpret_cast<void *>(map_base), static_cast<size_t>(map_end - map_base), segment_size, compressed_data_buf, file_size);
+                R_UNLESS_LOG(decompressed, ldr::ResultInvalidNso(), "[ldr] Failed to decompress segment with zbic!\n");
+            } else {
+                bool decompressed = (util::DecompressLZ4(reinterpret_cast<void *>(map_base), segment_size, compressed_data_buf, file_size) == static_cast<int>(segment_size));
+                R_UNLESS_LOG(decompressed, ldr::ResultInvalidNso(), "[ldr] Failed to decompress segment with lz4!\n");
+            }
+
+            R_SUCCEED();
+        }
+
+        Result CheckSegmentHash(const NsoHeader *nso_header, uintptr_t map_address, NsoHeader::Segment segment) {
+            if ((nso_header->flags & (NsoHeader::Flag_CheckHashText << segment)) == 0) {
+                R_SUCCEED();
+            }
+
+            u8 hash[crypto::Sha256Generator::HashSize];
+            crypto::GenerateSha256(hash, sizeof(hash),
+                reinterpret_cast<void *>(map_address + nso_header->segments[segment].dst_offset),
+                nso_header->segments[segment].size);
+            R_UNLESS_LOG(std::memcmp(hash, nso_header->segment_hashes[segment], sizeof(hash)) == 0, ldr::ResultInvalidNso(), "[ldr] Invalid segment hash!\n");
+            R_SUCCEED();
+        }
+
+        Result LoadAutoLoadModule(os::NativeHandle process_handle, fs::FileHandle file, ncm::ProgramId program_id, bool is_main_nso, const NsoHeader *nso_header, uintptr_t nso_address, size_t nso_size, size_t map_size) {
+            const bool is_zbic = (nso_header->flags & NsoHeader::Flag_UseZbicCompression) != 0;
+
+            const size_t module_size = static_cast<size_t>(nso_header->rw_dst_offset) + util::AlignUp(nso_header->rw_size + nso_header->bss_size, os::MemoryPageSize);
+            const size_t arena_size  = (nso_size > module_size) ? (nso_size - module_size) : 0;
+            const bool has_pcv_arena = g_is_pcv && arena_size == hoc::pcv::PcvArenaSize;
+
+            /* Map and read data from file. */
+            {
+                /* Map the process memory. */
+                void *mapped_memory = nullptr;
+                R_TRY(os::MapProcessMemory(std::addressof(mapped_memory), process_handle, nso_address, map_size, GenerateSecureRandom));
+                ON_SCOPE_EXIT { os::UnmapProcessMemory(mapped_memory, process_handle, nso_address, map_size); };
+
+                const uintptr_t map_address = reinterpret_cast<uintptr_t>(mapped_memory);
+                const uintptr_t map_end     = map_address + map_size;
+
+                /* Load NSO segments. */
+                R_TRY(LoadAutoLoadModuleSegment(file, nso_header->segments[NsoHeader::Segment_Text].file_offset, nso_header->text_compressed_size, nso_header->text_size,
+                                                      (nso_header->flags & NsoHeader::Flag_CompressedText) != 0, is_zbic, map_address + nso_header->text_dst_offset, map_end));
+                R_TRY(LoadAutoLoadModuleSegment(file, nso_header->segments[NsoHeader::Segment_Ro].file_offset, nso_header->ro_compressed_size, nso_header->ro_size,
+                                                      (nso_header->flags & NsoHeader::Flag_CompressedRo) != 0, is_zbic, map_address + nso_header->ro_dst_offset, map_end));
+                R_TRY(LoadAutoLoadModuleSegment(file, nso_header->segments[NsoHeader::Segment_Rw].file_offset, nso_header->rw_compressed_size, nso_header->rw_size,
+                                                      (nso_header->flags & NsoHeader::Flag_CompressedRw) != 0, is_zbic, map_address + nso_header->rw_dst_offset, map_end));
+
+                /* Clear unused space to zero. */
+                const size_t text_end = static_cast<size_t>(nso_header->text_dst_offset) + static_cast<size_t>(nso_header->text_size);
+                const size_t ro_end   = static_cast<size_t>(nso_header->ro_dst_offset)   + static_cast<size_t>(nso_header->ro_size);
+                const size_t rw_end   = static_cast<size_t>(nso_header->rw_dst_offset)   + static_cast<size_t>(nso_header->rw_size);
+                std::memset(reinterpret_cast<void *>(map_address + text_end), 0, nso_header->ro_dst_offset - text_end);
+                std::memset(reinterpret_cast<void *>(map_address + ro_end),   0, nso_header->rw_dst_offset - ro_end);
+                std::memset(reinterpret_cast<void *>(map_address + rw_end),   0, nso_size - rw_end);
+
+                /* Check segment hashes. */
+                R_TRY(CheckSegmentHash(nso_header, map_address, NsoHeader::Segment_Text));
+                R_TRY(CheckSegmentHash(nso_header, map_address, NsoHeader::Segment_Ro));
+                R_TRY(CheckSegmentHash(nso_header, map_address, NsoHeader::Segment_Rw));
+
+                /* Apply embedded patches. */
+                ApplyEmbeddedPatchesToModule(nso_header->module_id, map_address, nso_size);
+
+                /* C9: Nexus qlaunch theme compatibility on 23.0.0/23.0.1, without replacing the
+                 * USB/native-error patch policy or patching other programs. */
+                if (program_id == ncm::SystemAppletId::Qlaunch && is_main_nso
+                        && nso_header->text_dst_offset <= map_size
+                        && nso_header->text_size <= map_size - nso_header->text_dst_offset) {
+                    qlaunch_compat::ApplyForFirmware(static_cast<u32>(hos::GetVersion()),
+                        reinterpret_cast<u8 *>(map_address + nso_header->text_dst_offset), nso_header->text_size);
+                }
+
+                /* Apply IPS patches. */
+                LocateAndApplyIpsPatchesToModule(nso_header->module_id, map_address, nso_size);
+
+                /* The extra RX page must be a valid runtime module even when
+                 * PCV OC patches are bypassed by a diagnostic selector. */
+                if (has_pcv_arena) {
+                    hoc::pcv::InitializeHookModule(map_address + module_size + hoc::pcv::PcvDataArenaSize);
+                }
+
+                /* Apply Horizon OC's PCV and PTM patches. */
+                if (has_pcv_arena && !hoc::IsPcvOverclockBypassSelected()) {
+                    hoc::BootProbe(1);
+                    /* Keep module metadata before the hook payload. The third
+                     * page is runtime-owned BSS, separate from hook data. */
+                    const uintptr_t data = map_address + module_size;
+                    const uintptr_t code = data + hoc::pcv::PcvDataArenaSize + hoc::pcv::PcvHookPayloadOffset;
+                    hoc::pcv::Patch(map_address, module_size, code, hoc::pcv::PcvHookPayloadCapacity, nso_address, data);
+                }
+
+                if (g_is_ptm) {
+                    hoc::BootProbe(3);
+                    hoc::ptm::Patch(map_address, nso_size);
+                    hoc::BootProbe(4);
+                }
+
+                /* NvServices patching remains disabled upstream because it was unstable. */
+                if (g_is_nvsrv) {
+                    // hoc::nvsrv::Patch(map_address, nso_size, nso_address);
+                }
+
+                /* Record the final bytes after both embedded and SD IPS
+                 * patches. This is active only for exact diagnostic targets. */
+                FinalizeEmbeddedPatchDiagnostics(program_id, is_main_nso, nso_header->module_id, map_address, nso_size);
+            }
+
+            /* Set permissions. */
+            const size_t text_size = util::AlignUp(nso_header->text_size, os::MemoryPageSize);
+            const size_t ro_size   = util::AlignUp(nso_header->ro_size, os::MemoryPageSize);
+            const bool set_pcv_data_arena_permission = has_pcv_arena && !hoc::IsPcvDataArenaPermissionBypassSelected();
+            const bool set_pcv_code_arena_permission = has_pcv_arena && !hoc::IsPcvCodeArenaPermissionBypassSelected();
+            const size_t rw_size   = util::AlignUp(nso_header->rw_size + nso_header->bss_size, os::MemoryPageSize) + (set_pcv_data_arena_permission ? hoc::pcv::PcvDataArenaSize : 0);
+            if (text_size) {
+                const bool prevent_code_reads = (nso_header->flags & NsoHeader::Flag_PreventCodeReads);
+                R_TRY(os::SetProcessMemoryPermission(process_handle, nso_address + nso_header->text_dst_offset, text_size, prevent_code_reads ? os::MemoryPermission_ExecuteOnly : os::MemoryPermission_ReadExecute));
+            }
+            if (ro_size) {
+                R_TRY(os::SetProcessMemoryPermission(process_handle, nso_address + nso_header->ro_dst_offset, ro_size, os::MemoryPermission_ReadOnly));
+            }
+            if (rw_size) {
+                R_TRY(os::SetProcessMemoryPermission(process_handle, nso_address + nso_header->rw_dst_offset, rw_size, os::MemoryPermission_ReadWrite));
+            }
+            if (set_pcv_code_arena_permission) {
+                R_TRY(os::SetProcessMemoryPermission(process_handle, nso_address + module_size + hoc::pcv::PcvDataArenaSize + hoc::pcv::PcvCodeArenaSize, hoc::pcv::PcvRuntimeArenaSize, os::MemoryPermission_ReadWrite));
+                const Result permission_result = os::SetProcessMemoryPermission(process_handle, nso_address + module_size + hoc::pcv::PcvDataArenaSize, hoc::pcv::PcvCodeArenaSize, os::MemoryPermission_ReadExecute);
+                if (hoc::IsPcvRxPermissionStatusProbeSelected()) {
+                    hoc::panic::SmcError(R_SUCCEEDED(permission_result) ? 0x0F0 : 0xF00);
+                    CRASH("TR4U PCV RX permission status checkpoint");
+                }
+                R_TRY(permission_result);
+            }
+            if (set_pcv_data_arena_permission || set_pcv_code_arena_permission) {
+                hoc::BootProbe(2);
+            }
+
+            /* HOC 2.6.0 uses its upstream logging implementation. No SD I/O
+             * is added to process loading; C22's USB/memory logger is separate. */
+
+            R_SUCCEED();
+        }
+
+        Result LoadAutoLoadModules(const ProcessInfo *process_info, ncm::ProgramId program_id, const AutoLoadModuleContext &ctx, const ArgumentStore::Entry *argument) {
+            /* Load each NSO. */
+            const uintptr_t total_end = process_info->code_address + process_info->total_size;
+
+            for (int i = 0; i < ctx.nso_count; i++) {
+                const NsoIndex nso_idx = static_cast<NsoIndex>(ctx.ali.nso_indices[i]);
+                const bool is_zbic    = (ctx.headers[i].flags & NsoHeader::Flag_UseZbicCompression) != 0;
+                const size_t map_size = is_zbic ? (total_end - process_info->nso_address[i]) : process_info->nso_size[i];
+
+                AMS_LOG("[ldr] module[%d]: idx=%d, path='%s', zbic=%d\n", i, (int)nso_idx, GetNsoPath(nso_idx), is_zbic);
+
+                fs::FileHandle file;
+                R_TRY(fs::OpenFile(std::addressof(file), GetNsoPath(nso_idx), fs::OpenMode_Read));
+                ON_SCOPE_EXIT { fs::CloseFile(file); };
+
+                R_TRY(LoadAutoLoadModule(process_info->process_handle, file, program_id, nso_idx == Nso_Main, ctx.headers + i,
+                      process_info->nso_address[i], process_info->nso_size[i], map_size));
+            }
+
+            /* Load arguments, if present. */
+            if (argument != nullptr) {
+                /* Write argument data into memory. */
+                {
+                    void *map_address = nullptr;
+                    R_TRY(os::MapProcessMemory(std::addressof(map_address), process_info->process_handle, process_info->args_address, process_info->args_size, GenerateSecureRandom));
+                    ON_SCOPE_EXIT { os::UnmapProcessMemory(map_address, process_info->process_handle, process_info->args_address, process_info->args_size); };
+
+                    ProgramArguments *args = static_cast<ProgramArguments *>(map_address);
+                    std::memset(args, 0, sizeof(*args));
+                    args->allocated_size = process_info->args_size;
+                    args->arguments_size = argument->argument_size;
+                    std::memcpy(args->arguments, argument->argument, argument->argument_size);
+                }
+
+                /* Set argument region permissions. */
+                /* NOTE: Nintendo uses svc::SetProcessMemoryPermission directly here. */
+                R_TRY(os::SetProcessMemoryPermission(process_info->process_handle, process_info->args_address, process_info->args_size, os::MemoryPermission_ReadWrite));
+            }
+
+            R_SUCCEED();
+        }
+
+        Result CreateProcessAndLoadAutoLoadModules(ProcessInfo *out, const Meta *meta, const AutoLoadModuleContext &ctx, const ArgumentStore::Entry *argument, u32 flags, os::NativeHandle resource_limit) {
+            /* Get CreateProcessParameter. */
+            svc::CreateProcessParameter param;
+            R_TRY(GetCreateProcessParameter(std::addressof(param), meta, flags, resource_limit));
+
+            /* Decide on an NSO layout. */
+            R_TRY(DecideAddressSpaceLayout(out, std::addressof(param), ctx, argument));
+
+            /* Actually create process. */
+            svc::Handle process_handle;
+            R_TRY(svc::CreateProcess(std::addressof(process_handle), std::addressof(param), static_cast<const u32 *>(meta->aci_kac), meta->aci->kac_size / sizeof(u32)));
+
+            /* Set the output handle, and ensure that if we fail after this point we clean it up. */
+            out->process_handle = process_handle;
+            out->code_address   = param.code_address;
+            ON_RESULT_FAILURE { R_DISCARD(svc::CloseHandle(process_handle)); };
+
+            /* Load all auto load modules. */
+            R_RETURN(LoadAutoLoadModules(out, meta->aci->program_id, ctx, argument));
+        }
+
+    }
+
+    /* Process Creation API. */
+    Result CreateProcess(os::NativeHandle *out, PinId pin_id, const ncm::ProgramLocation &loc, const cfg::OverrideStatus &override_status, const char *path, const ArgumentStore::Entry *argument, u32 flags, os::NativeHandle resource_limit, const ldr::ProgramAttributes &attrs) {
+        /* Mount code. */
+        AMS_UNUSED(path);
+        ScopedCodeMountForCode mount(loc, override_status, attrs);
+        R_TRY(mount.GetResult());
+
+        /* Load meta, possibly from cache. */
+        Meta meta;
+        R_TRY(LoadMetaFromCache(std::addressof(meta), loc, override_status, attrs.platform));
+
+        /* Validate meta. */
+        R_TRY(ValidateMeta(std::addressof(meta), loc, mount.GetCodeVerificationData()));
+
+        /* If we should, load/validate the browser core dll. */
+        util::optional<ScopedCodeMountForBrowserCoreDll> bdll_mount;
+        if ((meta.acid->flags & Acid::AcidFlag_LoadBrowserCoreDll)) {
+            /* NOTE: I'm unsure whether we should be getting a fresh override status (allowing for different override between main and bdll?) */
+            /* or whether we should be using the main override status. Going to go with main, for sanity's sake. */
+            /* Also noting that Nintendo always passes ProgramAttributes=0 here, but this "should" be different on Ounce? */
+            /* Kind of unclear how to handle this without knowing what exactly is being ifdef'd. */
+            const ncm::ProgramLocation bdll_loc            = ncm::ProgramLocation::Make(ncm::SystemProgramId::BrowserCoreDll, ncm::StorageId::BuiltInSystem);
+            const cfg::OverrideStatus bdll_override_status = override_status;
+            const ldr::ProgramAttributes bdll_attrs        = attrs;
+            bdll_mount.emplace(bdll_loc, bdll_override_status, bdll_attrs);
+            R_TRY(bdll_mount->GetResult());
+
+            /* Load browser dll meta, possibly from cache. */
+            Meta bdll_meta;
+            R_TRY(LoadMetaFromCacheForBrowserCoreDll(std::addressof(bdll_meta), bdll_loc, bdll_override_status, bdll_attrs.platform));
+
+            /* Validate browser dll meta. */
+            R_TRY(ValidateMeta(std::addressof(bdll_meta), loc, mount.GetCodeVerificationData()));
+        }
+
+        /* Load, validate NSO headers. */
+        AutoLoadModuleContext ctx;
+        R_TRY(LoadAutoLoadHeaders(ctx, meta.acid->flags));
+        R_TRY(CheckAutoLoad(ctx, meta.acid->flags));
+
+        /* Actually create the process and load NSOs into process memory. */
+        ProcessInfo info;
+        R_TRY(CreateProcessAndLoadAutoLoadModules(std::addressof(info), std::addressof(meta), ctx, argument, flags, resource_limit));
+
+        /* The process cannot run yet. Only verified USB ExeFS launches bind
+         * their immutable resource snapshot. Native/HBL launches make no
+         * service request and cannot inherit an old title-map association. */
+        if (mount.UsesUsbCode()) {
+            const Result bind_result = BindUsbProcessContent(pin_id, loc.program_id, os::GetProcessId(info.process_handle));
+            if (R_FAILED(bind_result)) {
+                R_DISCARD(svc::CloseHandle(info.process_handle));
+                R_RETURN(bind_result);
+            }
+        }
+
+        if (g_is_pcv && hoc::IsPcvLoaderCompletionProbeSelected()) {
+            hoc::panic::SmcError(0x0F0);
+            CRASH("TR4U PCV loader completion checkpoint");
+        }
+
+        /* Register NSOs with the RoManager. */
+        {
+            /* Nintendo doesn't validate this get, but we do. */
+            os::ProcessId process_id = os::GetProcessId(info.process_handle);
+
+            /* Register new process. */
+            const auto as_type = GetProcessAddressSpace(std::addressof(meta));
+            RoManager::GetInstance().RegisterProcess(pin_id, process_id, meta.aci->program_id, as_type == Npdm::ProcessAddressSpace_64Bit39 || as_type == Npdm::ProcessAddressSpace_64Bit36);
+
+            /* Register all NSOs. */
+            for (int i = 0; i < ctx.nso_count; i++) {
+                RoManager::GetInstance().AddNso(pin_id, ctx.headers[i].module_id, info.nso_address[i], info.nso_size[i]);
+            }
+        }
+
+        /* If we're overriding for HBL, perform HTML document redirection. */
+        if (override_status.IsHbl()) {
+            /* Don't validate result, failure is okay. */
+            R_DISCARD(RedirectHtmlDocumentPathForHbl(loc));
+        }
+
+        /* Clear the external code for the program. */
+        fssystem::DestroyExternalCode(loc.program_id);
+        ClearUsbExternalCodeVerification(loc.program_id);
+
+        /* Note that we've created the program. */
+        SetLaunchedBootProgram(loc.program_id);
+
+        /* Move the process handle to output. */
+        *out = info.process_handle;
+
+        R_SUCCEED();
+    }
+
+    Result GetProgramInfo(ProgramInfo *out, cfg::OverrideStatus *out_status, const ncm::ProgramLocation &loc, const char *path, const ldr::ProgramAttributes &attrs) {
+        Meta meta;
+
+        /* Load Meta. */
+        {
+            AMS_UNUSED(path);
+
+            ScopedCodeMountForCode mount(loc, attrs);
+            R_TRY(mount.GetResult());
+            R_TRY(LoadMeta(std::addressof(meta), loc, mount.GetOverrideStatus(), attrs.platform, false));
+            if (out_status != nullptr) {
+                *out_status = mount.GetOverrideStatus();
+            }
+        }
+
+        return GetProgramInfoFromMeta(out, std::addressof(meta));
+    }
+
+    Result PinProgram(PinId *out_id, const ncm::ProgramLocation &loc, const cfg::OverrideStatus &override_status) {
+        R_UNLESS(RoManager::GetInstance().Allocate(out_id, loc, override_status), ldr::ResultMaxProcess());
+        R_SUCCEED();
+    }
+
+    Result UnpinProgram(PinId id) {
+        R_UNLESS(RoManager::GetInstance().Free(id), ldr::ResultNotPinned());
+        ReleaseUsbProcessContent(id);
+        R_SUCCEED();
+    }
+
+    Result GetProcessModuleInfo(u32 *out_count, ldr::ModuleInfo *out, size_t max_out_count, os::ProcessId process_id) {
+        R_UNLESS(RoManager::GetInstance().GetProcessModuleInfo(out_count, out, max_out_count, process_id), ldr::ResultNotPinned());
+        R_SUCCEED();
+    }
+
+    Result GetProgramLocationAndOverrideStatusFromPinId(ncm::ProgramLocation *out, cfg::OverrideStatus *out_status, PinId pin_id) {
+        R_UNLESS(RoManager::GetInstance().GetProgramLocationAndStatus(out, out_status, pin_id), ldr::ResultNotPinned());
+        R_SUCCEED();
+    }
+
+}
